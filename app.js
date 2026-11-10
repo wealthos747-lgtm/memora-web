@@ -86,6 +86,7 @@
   db.plans = db.plans || [];
   db.memos = db.memos || [];
   db.reports = db.reports || [];
+  db.wins = db.wins || [];
   const save = () => { A.writeDb(JSON.stringify(db)); if (window.__memReady) scheduleReminders(); };
   save();
 
@@ -336,6 +337,7 @@
         else if (f.status === "pending") { t.pending = { reason: f.reason || f.note || "", followWith: f.followWith || (t.pending && t.pending.followWith) || "", since: (t.pending && t.pending.since) || at }; t.history.push({ at, what: `Pending: ${t.pending.reason || "no reason given"}${t.pending.followWith ? " · follow up with " + t.pending.followWith : ""}`, meetingId: s.id }); }
         else if (f.status === "open" && t.pending) { t.pending = null; t.history.push({ at, what: "Moving again", meetingId: s.id }); }
       });
+      (mx.wins || []).forEach((w) => addWin(typeof w === "string" ? w : w && w.text, s.date, "meeting", s.id));
       (mx.remember || []).forEach((r) => { if (r && r.text) db.memos.push({ id: "n" + uid(), text: String(r.text), date: /^\d{4}-\d{2}-\d{2}$/.test(r.date || "") ? r.date : "", meetingId: s.id, created: at, done: false }); });
       const nm = mx.nextMeeting;
       if (nm && /^\d{4}-\d{2}-\d{2}$/.test(nm.date || "") && !db.plans.some((p) => p.fromId === s.id)) {
@@ -2074,85 +2076,316 @@ Return ONLY JSON: {"headline": one sentence on where my work stands right now, "
     if (!clarityFresh() && !clarBusy && !clarErr && db.settings.apiKey && meetings().some((m) => A.exists(m.id, "summary.md"))) makeClarity(true);
   };
 
-  // ---------- reports (weekly manager update + 4-week monthly)
-  let repBusy = "", repErr = "", repOpen = "";
-  function repRange(kind) {
-    const now = new Date();
-    if (kind === "week") { const from = weekStart(now); const to = new Date(now.getTime() + 60000); return { from, to, label: `${fmtDate(from.toISOString())} – ${fmtDate(now.toISOString())}` }; }
-    const to = new Date(now.getTime() + 60000); const from = weekStart(now); from.setDate(from.getDate() - 21);
-    return { from, to, label: `4 weeks · ${fmtDate(from.toISOString())} – ${fmtDate(now.toISOString())}` };
+  // ---------- reports: weekly · monthly (4 weeks) · quarterly · yearly — email, PDF, PPT, pack
+  let repBusy = "", repErr = "", repOpen = "", repKind = "week", repBack = 0, pptBusy = "";
+  const KINDS = { week: "Weekly", month: "Monthly", quarter: "Quarterly", year: "Yearly" };
+  const fyM = () => (db.settings.fyStart == null ? 3 : +db.settings.fyStart); // 3 = April (Indian financial year)
+  const MONS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const fyName = (y) => (fyM() === 0 ? String(y) : `FY ${y}-${String(y + 1).slice(2)}`);
+  function period(kind, back) {
+    const now = new Date(); let from, to, label;
+    if (kind === "week") { from = weekStart(now); from.setDate(from.getDate() - 7 * back); to = new Date(from); to.setDate(to.getDate() + 7); label = `Week of ${fmtDate(from.toISOString())}`; }
+    else if (kind === "month") { to = weekStart(now); to.setDate(to.getDate() + 7 - 28 * back); from = new Date(to); from.setDate(from.getDate() - 28); label = `4 weeks · ${fmtDate(from.toISOString())} – ${fmtDate(new Date(to - 86400000).toISOString())}`; }
+    else if (kind === "quarter") {
+      const mi = (now.getMonth() - fyM() + 12) % 12;
+      from = new Date(now.getFullYear(), now.getMonth() - mi + Math.floor(mi / 3) * 3 - 3 * back, 1); to = new Date(from.getFullYear(), from.getMonth() + 3, 1);
+      const qi = Math.floor(((from.getMonth() - fyM() + 12) % 12) / 3) + 1, fy = from.getMonth() >= fyM() ? from.getFullYear() : from.getFullYear() - 1;
+      label = `Q${qi} ${fyName(fy)} · ${MONS[from.getMonth()]}–${MONS[(from.getMonth() + 2) % 12]} ${new Date(to - 86400000).getFullYear()}`;
+    } else { const y = (now.getMonth() >= fyM() ? now.getFullYear() : now.getFullYear() - 1) - back; from = new Date(y, fyM(), 1); to = new Date(y + 1, fyM(), 1); label = fyM() === 0 ? `Year ${y}` : fyName(y) + ` · Apr ${y} – Mar ${y + 1}`.replace("Apr", MONS[fyM()]).replace("Mar", MONS[(fyM() + 11) % 12]); }
+    const end = back === 0 ? new Date(Math.min(to.getTime(), Date.now() + 60000)) : to;
+    return { kind, back, from, to: end, fullTo: to, label };
   }
-  function makeReport(kind) {
+  function subParts(P) { // building blocks a report is made from
+    const out = [], k = P.kind;
+    const step = (a, n, unit) => { const d = new Date(a); if (unit === "d") d.setDate(d.getDate() + n); else d.setMonth(d.getMonth() + n); return d; };
+    if (k === "week") return [{ from: P.from, to: P.to, name: "This week" }];
+    const [n, len, unit, nm] = k === "month" ? [4, 7, "d", "Week"] : k === "quarter" ? [3, 1, "m", "Month"] : [4, 3, "m", "Quarter"];
+    for (let i = 0; i < n; i++) { const a = step(P.from, i * len, unit), b = step(P.from, (i + 1) * len, unit); if (a >= P.to) break; out.push({ from: a, to: b < P.to ? b : P.to, name: `${nm} ${i + 1}${unit === "m" && k === "quarter" ? " (" + MONS[a.getMonth()] + ")" : ""}` }); }
+    return out;
+  }
+  function buckets(P) { // chart buckets
+    const k = P.kind, out = [];
+    if (k === "week") for (let i = 0; i < 7; i++) { const a = new Date(P.from); a.setDate(a.getDate() + i); const b = new Date(a); b.setDate(b.getDate() + 1); out.push({ a, b, l: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i] }); }
+    else if (k === "month") for (let i = 0; i < 4; i++) { const a = new Date(P.from); a.setDate(a.getDate() + 7 * i); const b = new Date(a); b.setDate(b.getDate() + 7); out.push({ a, b, l: "W" + (i + 1) }); }
+    else { const n = k === "quarter" ? 3 : 12; for (let i = 0; i < n; i++) { const a = new Date(P.from.getFullYear(), P.from.getMonth() + i, 1), b = new Date(a.getFullYear(), a.getMonth() + 1, 1); out.push({ a, b, l: MONS[a.getMonth()] }); } }
+    const inB = (iso, x) => !!iso && new Date(iso) >= x.a && new Date(iso) < x.b;
+    return out.map((x) => ({ l: x.l, meetings: meetings().filter((m) => inB(m.date, x)).length, created: db.tickets.filter((t) => inB(t.created, x)).length, closed: db.tickets.filter((t) => t.status === "done" && inB(t.doneAt, x)).length }));
+  }
+  function pStats(P) {
+    const n = activity(P.from, P.to).n;
+    return { meetings: n.meetings, hours: Math.round(n.mins / 6) / 10, created: n.created, closed: n.closed, rate: n.created ? Math.min(100, Math.round((n.closed / n.created) * 100)) : null, pending: n.pending, manager: n.manager };
+  }
+  const delta = (a, b) => (b == null || a == null ? "" : a > b ? `▲ ${Math.round((a - b) * 10) / 10}` : a < b ? `▼ ${Math.round((b - a) * 10) / 10}` : "＝");
+  const winsIn = (P) => (db.wins || []).filter((w) => new Date(w.date) >= P.from && new Date(w.date) < P.fullTo);
+  function addWin(text, date, source, ref) {
+    db.wins = db.wins || []; const t = String(text || "").trim(); if (!t) return;
+    if (db.wins.some((w) => w.text.toLowerCase() === t.toLowerCase())) return;
+    db.wins.push({ id: "w" + uid(), text: t, date: date || nowISO(), source: source || "manual", ref: ref || "" });
+  }
+  const SECTIONS = {
+    week: "Key meetings & outcomes; Completed; In progress; Pending & blockers (why, who I'm chasing); Support / alignment needed; Plan for next week",
+    month: "Week by week; Top achievements; People & accounts engaged; Pending & risks; Support / alignment needed; Focus for next month",
+    quarter: "Month by month; Top achievements; Key relationships & accounts; Trends vs last quarter; Risks & pending; Focus for next quarter",
+    year: "Quarter by quarter; Top achievements of the year; Growth & trends; Key relationships & accounts; Lessons learned; Goals for next year",
+  };
+  function makeReport(kind, back) {
     if (repBusy) return;
     if (!db.settings.apiKey) { toast("Add your Gemini key in Settings first"); return; }
-    const r = repRange(kind), me = db.settings.name || "", mgr = db.settings.managerName || "";
-    let data;
-    if (kind === "week") data = activity(r.from, r.to).text;
-    else {
-      const weeks = [];
-      for (let i = 0; i < 4; i++) {
-        const a = new Date(r.from); a.setDate(a.getDate() + i * 7); const b = new Date(a); b.setDate(b.getDate() + 7);
-        const act = activity(a, b < r.to ? b : r.to);
-        weeks.push(`===== WEEK ${i + 1} (${fmtDate(a.toISOString())} – ${fmtDate(new Date(Math.min(b, r.to) - 1).toISOString())}) =====\n${act.text}`);
-      }
-      const prev = (db.reports || []).filter((x) => x.kind === "week" && new Date(x.at) >= r.from).map((x) => `--- weekly update sent ${fmtDate(x.at)} ---\n${x.body}`).join("\n\n");
-      data = weeks.join("\n\n") + (prev ? "\n\n===== WEEKLY UPDATES ALREADY WRITTEN =====\n" + prev : "");
-    }
-    const common = `I am ${me || "the sender"}${mgr ? `; my manager is ${mgr}` : ""}. Use ONLY the activity data below (my meetings, tasks and follow-ups, captured by Memora from my recordings). Never invent numbers, clients or results; if a section has nothing, write "None this period".
-Style: crisp, professional and confident; plain-text email with simple "-" bullets (no markdown, no bold); specific names, numbers and dates; a busy manager must understand it in 60 seconds.`;
-    const prompt = kind === "week"
-      ? `Write my WEEKLY update email to my manager for ${r.label}.\n${common}\nBody structure:\n1. Greeting and a one-line headline of the week\n2. Key meetings & outcomes (one line each: with whom, what was decided)\n3. Completed this week\n4. In progress (owner, due date)\n5. Pending / blockers: why each is pending and who I am following up with\n6. Need your support / alignment\n7. Plan for next week (upcoming meetings and priorities)\n8. Sign-off with my name\nReturn ONLY JSON: {"subject": "...", "body": "...", "highlights": [3 to 5 one-line highlights]}`
-      : `Write my MONTHLY report email to my manager covering the last 4 weeks (${r.label}), built week by week.\n${common}\nBody structure:\n1. Greeting and a one-line headline of the month\n2. Numbers at a glance (meetings, hours in meetings, tasks created vs closed, completion %)\n3. Week by week: Week 1 to Week 4, 2–4 lines each with the main meetings, outcomes and closures\n4. Top achievements of the month\n5. People / accounts engaged most and where each relationship stands\n6. Pending items and risks, with reasons and owners\n7. Support / alignment I need\n8. Focus for next month\n9. Sign-off with my name\nReturn ONLY JSON: {"subject": "...", "body": "...", "highlights": [3 to 5 one-line highlights]}`;
+    back = back || 0;
+    const P = period(kind, back), Q = period(kind, back + 1), cur = pStats(P), prev = pStats(Q);
+    const subKind = { month: "week", quarter: "month", year: "quarter" }[kind];
+    const parts = subParts(P).map((sp) => `===== ${sp.name.toUpperCase()} (${fmtDate(sp.from.toISOString())} – ${fmtDate(new Date(sp.to - 1).toISOString())}) =====\n${activity(sp.from, sp.to).text}`);
+    const earlier = subKind ? (db.reports || []).filter((r) => r.kind === subKind && new Date(r.from) >= P.from && new Date(r.from) < P.fullTo).map((r) => `--- ${KINDS[subKind]} report: ${r.label} ---\n${r.body}`).join("\n\n") : "";
+    const wins = winsIn(P);
+    const data = [`REPORT: ${KINDS[kind]} · ${P.label}`,
+      `NUMBERS this period vs previous period (${Q.label}): meetings ${cur.meetings} vs ${prev.meetings}; hours in meetings ${cur.hours} vs ${prev.hours}; tasks created ${cur.created} vs ${prev.created}; tasks closed ${cur.closed} vs ${prev.closed}; completion ${cur.rate == null ? "-" : cur.rate + "%"} vs ${prev.rate == null ? "-" : prev.rate + "%"}; pending now ${cur.pending}; needing manager ${cur.manager}`,
+      "", ...parts, earlier ? "\n===== REPORTS ALREADY WRITTEN FOR PARTS OF THIS PERIOD =====\n" + earlier : "",
+      "\n===== ACHIEVEMENTS BANK =====\n" + (wins.map((w) => `- ${fmtDate(w.date)}: ${w.text}`).join("\n") || "- none recorded")].join("\n");
+    const me = db.settings.name || "", mgr = db.settings.managerName || "", role = db.settings.role || "";
+    const prompt = `Write my ${KINDS[kind].toUpperCase()} report for my manager covering ${P.label}. I am ${me || "the sender"}${role ? ", " + role : ""}${mgr ? "; my manager is " + mgr : ""}.
+Use ONLY the data below (my meetings, tasks, follow-ups and achievements captured by Memora from my recordings). Never invent numbers, clients or results. Compare with the previous period where the numbers allow. If a section has nothing, say "None this period".
+Style: crisp, professional and confident; specific names, numbers and dates; scannable in 60 seconds.
+Return ONLY JSON:
+{"subject": email subject,
+ "headline": one-line headline of the period,
+ "body": the full plain-text email (greeting, headline, numbers at a glance with the comparison, then these sections: ${SECTIONS[kind]}, sign-off with my name). Use simple "-" bullets, no markdown,
+ "highlights": [3 to 5 one-line highlights],
+ "sections": [ { "title": section title, "points": [short bullet points] } ] — the same sections as the email, for the PDF,
+ "wins": [clear achievements from this period worth keeping for my appraisal]}`;
     repBusy = kind; repErr = ""; render();
     aiGen(prompt, data, true).then((raw) => {
       const d = parseJ(raw); if (!d || !d.body) throw new Error("Could not read the AI answer. Try again.");
       db.reports = db.reports || [];
-      const rep = { id: "r" + uid(), kind, at: nowISO(), from: r.from.toISOString(), to: r.to.toISOString(), label: r.label, subject: d.subject || (kind === "week" ? "Weekly update" : "Monthly report"), body: d.body, highlights: d.highlights || [] };
-      db.reports.push(rep); while (db.reports.length > 60) db.reports.shift();
-      repOpen = rep.id; save(); toast(kind === "week" ? "Weekly update ready" : "Monthly report ready");
+      const rep = { id: "r" + uid(), kind, back, at: nowISO(), from: P.from.toISOString(), to: P.to.toISOString(), label: P.label, prevLabel: Q.label,
+        subject: d.subject || `${KINDS[kind]} report`, headline: d.headline || "", body: d.body, highlights: d.highlights || [], sections: Array.isArray(d.sections) ? d.sections : [], stats: { cur, prev }, buckets: buckets(P) };
+      (d.wins || []).forEach((w) => addWin(typeof w === "string" ? w : w.text, P.to.toISOString() > nowISO() ? nowISO() : new Date(P.to - 1).toISOString(), "report", rep.id));
+      db.reports.push(rep); while (db.reports.length > 80) db.reports.shift();
+      repOpen = rep.id; save(); toast(`${KINDS[kind]} report ready`);
     }).catch((e) => { repErr = e.message; }).then(() => { repBusy = ""; if (view === "reports") render(); });
+  }
+
+  // ---------- PDF (cover, number tiles with comparison, charts, sections, achievements)
+  function svgBars(labels, series, w, h) {
+    w = w || 520; h = h || 170; const pad = 26, max = Math.max(1, ...series.flatMap((s) => s.values));
+    const gw = (w - pad * 2) / labels.length, bw = Math.min(26, (gw - 8) / series.length);
+    let g = `<line x1="${pad}" y1="${h - 22}" x2="${w - pad}" y2="${h - 22}" stroke="#ddd"/>`;
+    labels.forEach((l, i) => {
+      series.forEach((s, j) => { const v = s.values[i] || 0, bh = ((h - 50) * v) / max, x = pad + i * gw + (gw - bw * series.length) / 2 + j * bw, y = h - 22 - bh;
+        g += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(bw - 3).toFixed(1)}" height="${bh.toFixed(1)}" rx="3" fill="${s.color}"/>${v ? `<text x="${(x + (bw - 3) / 2).toFixed(1)}" y="${(y - 4).toFixed(1)}" font-size="9" text-anchor="middle" fill="#555">${v}</text>` : ""}`; });
+      g += `<text x="${(pad + i * gw + gw / 2).toFixed(1)}" y="${h - 7}" font-size="9.5" text-anchor="middle" fill="#777">${esc(l)}</text>`;
+    });
+    const leg = series.length > 1 ? series.map((s, j) => `<rect x="${pad + j * 110}" y="2" width="10" height="10" rx="2" fill="${s.color}"/><text x="${pad + j * 110 + 15}" y="11" font-size="10" fill="#555">${esc(s.name)}</text>`).join("") : "";
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="100%">${leg}${g}</svg>`;
+  }
+  function reportHtml(rep) {
+    const c = rep.stats.cur, p = rep.stats.prev, b = rep.buckets || [];
+    const tile = (v, l, pv, suf) => `<div class="tile"><b>${v == null ? "—" : v}${v != null && suf ? suf : ""}</b><span>${l}</span>${pv !== undefined ? `<i>${delta(v, pv)} vs last</i>` : ""}</div>`;
+    const wins = (db.wins || []).filter((w) => new Date(w.date) >= new Date(rep.from) && new Date(w.date) <= new Date(new Date(rep.to).getTime() + 86400000));
+    return `<!doctype html><html><head><meta charset="utf-8"><style>
+      @font-face{font-family:Jakarta;font-weight:400;src:url(fonts/jakarta-400.woff2)}
+      @font-face{font-family:Jakarta;font-weight:600;src:url(fonts/jakarta-600.woff2)}
+      @font-face{font-family:Jakarta;font-weight:700;src:url(fonts/jakarta-700.woff2)}
+      @page{size:A4;margin:15mm 15mm 17mm}
+      body{font-family:Jakarta,"Noto Sans",sans-serif;color:#1d1c20;font-size:10.4pt;line-height:1.55;margin:0}
+      .cover{background:linear-gradient(135deg,#4F46E5,#7C5CF0);color:#fff;border-radius:14px;padding:20px 22px;margin-bottom:16px}
+      .brand{font-size:8.5pt;font-weight:700;letter-spacing:.14em;opacity:.85}
+      .ttl{font-size:21pt;font-weight:700;margin:6px 0 2px;line-height:1.15}
+      .meta{font-size:9.5pt;opacity:.9}
+      .head{font-size:12.5pt;font-weight:600;margin:4px 0 14px;border-left:3px solid #4F46E5;padding-left:10px}
+      .tiles{display:flex;gap:8px;margin-bottom:14px}
+      .tile{flex:1;border:1px solid #e6e4f5;border-radius:10px;padding:9px 11px}
+      .tile b{display:block;font-size:16pt;font-weight:700;color:#4F46E5;line-height:1.1}
+      .tile span{font-size:8.5pt;color:#666;font-weight:600}
+      .tile i{display:block;font-style:normal;font-size:8pt;color:#888;margin-top:2px}
+      .charts{display:flex;gap:12px;margin-bottom:6px;page-break-inside:avoid}
+      .chart{flex:1;border:1px solid #eee;border-radius:10px;padding:8px 10px}
+      .chart h4{margin:0 0 4px;font-size:9pt;color:#555}
+      h2{font-weight:700;font-size:12pt;color:#4F46E5;margin:18px 0 5px;border-bottom:1px solid #e3e1f7;padding-bottom:3px;page-break-after:avoid}
+      ul{padding-left:18px;margin:3px 0} li{margin:2px 0}
+      .wins li::marker{content:"★  ";color:#7C5CF0}
+      .foot{margin-top:24px;color:#9a968e;font-size:8.5pt;text-align:center}
+    </style></head><body>
+      <div class="cover"><div class="brand">MEMORA · ${KINDS[rep.kind].toUpperCase()} REPORT</div><div class="ttl">${esc(rep.label)}</div>
+      <div class="meta">${esc(db.settings.name || "")}${db.settings.role ? " · " + esc(db.settings.role) : ""}${db.settings.managerName ? " · For " + esc(db.settings.managerName) : ""} · Prepared ${fmtDate(rep.at)}</div></div>
+      ${rep.headline ? `<div class="head">${esc(rep.headline)}</div>` : ""}
+      <div class="tiles">${tile(c.meetings, "Meetings", p.meetings)}${tile(c.hours, "Hours in meetings", p.hours, "h")}${tile(c.closed, "Tasks closed", p.closed)}${tile(c.rate, "Completion", p.rate, "%")}${tile(c.pending, "Pending now")}</div>
+      ${b.length ? `<div class="charts"><div class="chart"><h4>Meetings</h4>${svgBars(b.map((x) => x.l), [{ name: "Meetings", color: "#4F46E5", values: b.map((x) => x.meetings) }], 360, 150)}</div>
+        <div class="chart"><h4>Tasks created vs closed</h4>${svgBars(b.map((x) => x.l), [{ name: "Created", color: "#C7C2F7", values: b.map((x) => x.created) }, { name: "Closed", color: "#17936A", values: b.map((x) => x.closed) }], 360, 150)}</div></div>` : ""}
+      ${(rep.sections || []).map((s) => `<h2>${esc(s.title || "")}</h2><ul>${(s.points || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`).join("") || `<h2>Report</h2><div style="white-space:pre-wrap">${esc(rep.body)}</div>`}
+      ${wins.length ? `<h2>Achievements</h2><ul class="wins">${wins.map((w) => `<li>${esc(w.text)} <span style="color:#999;font-size:8.5pt">· ${fmtDate(w.date)}</span></li>`).join("")}</ul>` : ""}
+      <div class="foot">Prepared by Memora from recorded meetings and tracked tasks</div></body></html>`;
+  }
+  const RS = { id: "reports" };
+  const repFile = (rep, ext) => `${KINDS[rep.kind]} report - ${rep.label.replace(/[·/\\:–—]/g, "-").replace(/\s+/g, " ").replace(/-( -)+/g, "-").trim()}.${ext}`;
+  function reportPdf(rep, quiet) {
+    const html = reportHtml(rep), name = repFile(rep, "pdf"), folder = "Reports";
+    if (quiet) return savePdfQuiet(RS, html, name, folder);
+    toast("Saving PDF…");
+    return savePdfQuiet(RS, html, name, folder).then((r) => {
+      if (!r.ok) { toast(r.msg || "PDF failed"); return; }
+      const sh = sheet(`<h3>PDF saved ✓</h3><p class="sub">${esc(name)}<br>${esc(r.msg)}</p>
+        <div class="row"><button class="btn line" data-print>${ic("file")} Print</button>${r.local ? `<button class="btn gold" data-share>${ic("share")} Share</button>` : ""}</div>`);
+      const shb = $("[data-share]", sh); if (shb) shb.onclick = () => { closeSheet(); A.shareFile(RS.id, r.local, name); };
+      $("[data-print]", sh).onclick = () => { closeSheet(); A.printPdf(html, name.replace(/\.pdf$/, "")); };
+    });
+  }
+
+  // ---------- PPT (AI picks the strongest content → editable .pptx with native charts and speaker notes)
+  function loadScript(src) { return new Promise((res, rej) => { if (window.PptxGenJS) return res(); const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = () => rej(new Error("Could not load the slide maker")); document.head.appendChild(s); }); }
+  async function reportPpt(rep, quiet) {
+    if (pptBusy) return null;
+    pptBusy = rep.id; if (!quiet) { toast("Building your slides…"); render(); }
+    try {
+      if (!rep.slides) {
+        const prompt = `Build the content for a ${KINDS[rep.kind].toLowerCase()} review presentation to my manager from the report below. Pick only the STRONGEST content: outcomes, numbers, wins, risks and asks. 6 to 9 content slides.
+Each slide: a short, punchy title (max 7 words) that states the message, 3 to 5 bullets (max 12 words each, specific names and numbers), and speaker notes (2 to 4 sentences I can say).
+Return ONLY JSON: {"title": deck title, "subtitle": one line, "slides": [ {"title": "...", "bullets": ["..."], "notes": "..."} ], "closing": one-line ask or next step}`;
+        const raw = await aiGen(prompt, `REPORT ${rep.label}\nHEADLINE: ${rep.headline}\nNUMBERS: ${JSON.stringify(rep.stats)}\n\n${rep.body}`, true);
+        const d = parseJ(raw); if (!d || !Array.isArray(d.slides)) throw new Error("Could not read the slide content. Try again.");
+        rep.slides = d; save();
+      }
+      await loadScript("pptxgen.bundle.js");
+      const pp = new window.PptxGenJS(); pp.layout = "LAYOUT_WIDE"; pp.author = db.settings.name || "Memora"; pp.title = rep.slides.title || rep.subject;
+      const IND = "4F46E5", VIO = "7C5CF0", INK = "1C1B22", MUT = "6E6B76", F = "Calibri";
+      const foot = (s, n) => { s.addText(`${KINDS[rep.kind]} report · ${rep.label}`, { x: 0.5, y: 7.05, w: 9, h: 0.3, fontSize: 9, color: MUT, fontFace: F }); s.addText(String(n), { x: 12.3, y: 7.05, w: 0.6, h: 0.3, fontSize: 9, color: MUT, align: "right", fontFace: F }); };
+      let n = 1;
+      // 1 title
+      let s = pp.addSlide(); s.background = { color: IND };
+      s.addShape(pp.ShapeType.ellipse, { x: 9.6, y: -1.6, w: 5.5, h: 5.5, fill: { color: VIO, transparency: 35 }, line: { color: VIO, transparency: 100 } });
+      s.addText(`${KINDS[rep.kind].toUpperCase()} REPORT`, { x: 0.8, y: 2.0, w: 9, h: 0.4, fontSize: 13, bold: true, color: "DCD9FF", charSpacing: 4, fontFace: F });
+      s.addText(rep.slides.title || rep.subject, { x: 0.8, y: 2.5, w: 10.5, h: 1.5, fontSize: 38, bold: true, color: "FFFFFF", fontFace: F, valign: "top" });
+      s.addText(rep.slides.subtitle || rep.headline || "", { x: 0.8, y: 4.1, w: 10.5, h: 0.8, fontSize: 17, color: "EDEBFF", fontFace: F });
+      s.addText(`${db.settings.name || ""}${db.settings.role ? " · " + db.settings.role : ""}   |   ${rep.label}`, { x: 0.8, y: 6.3, w: 11, h: 0.4, fontSize: 12, color: "DCD9FF", fontFace: F });
+      // 2 numbers
+      s = pp.addSlide(); n++;
+      s.addText("The period in numbers", { x: 0.6, y: 0.4, w: 12, h: 0.8, fontSize: 28, bold: true, color: INK, fontFace: F });
+      const c = rep.stats.cur, p = rep.stats.prev;
+      [["Meetings", c.meetings, p.meetings, ""], ["Hours in meetings", c.hours, p.hours, "h"], ["Tasks closed", c.closed, p.closed, ""], ["Completion", c.rate, p.rate, "%"]].forEach(([l, v, pv, suf], i) => {
+        const x = 0.6 + i * 3.1;
+        s.addShape(pp.ShapeType.roundRect, { x, y: 1.6, w: 2.85, h: 2.0, fill: { color: "F3F2FD" }, line: { color: "E2E0F7" }, rectRadius: 0.15 });
+        s.addText(v == null ? "—" : v + suf, { x, y: 1.75, w: 2.85, h: 0.9, fontSize: 36, bold: true, color: IND, align: "center", fontFace: F });
+        s.addText(l, { x, y: 2.65, w: 2.85, h: 0.4, fontSize: 13, color: INK, align: "center", fontFace: F });
+        s.addText(delta(v, pv) ? `${delta(v, pv)} vs last` : "", { x, y: 3.05, w: 2.85, h: 0.35, fontSize: 11, color: MUT, align: "center", fontFace: F });
+      });
+      if (rep.headline) s.addText(rep.headline, { x: 0.6, y: 4.2, w: 12, h: 1.0, fontSize: 18, color: INK, fontFace: F, italic: true });
+      s.addNotes(`This period: ${c.meetings} meetings, ${c.closed} tasks closed. Previous period: ${p.meetings} meetings, ${p.closed} closed.`);
+      foot(s, n);
+      // 3 charts
+      const b = rep.buckets || [];
+      if (b.length) {
+        s = pp.addSlide(); n++;
+        s.addText("Activity trend", { x: 0.6, y: 0.4, w: 12, h: 0.8, fontSize: 28, bold: true, color: INK, fontFace: F });
+        s.addChart(pp.ChartType.bar, [{ name: "Meetings", labels: b.map((x) => x.l), values: b.map((x) => x.meetings) }], { x: 0.5, y: 1.4, w: 6.1, h: 5.2, barDir: "col", chartColors: [IND], catAxisLabelFontSize: 11, valAxisLabelFontSize: 10, showTitle: true, title: "Meetings", titleFontSize: 13 });
+        s.addChart(pp.ChartType.bar, [{ name: "Created", labels: b.map((x) => x.l), values: b.map((x) => x.created) }, { name: "Closed", labels: b.map((x) => x.l), values: b.map((x) => x.closed) }], { x: 6.8, y: 1.4, w: 6.1, h: 5.2, barDir: "col", chartColors: ["C7C2F7", "17936A"], showLegend: true, legendPos: "b", catAxisLabelFontSize: 11, valAxisLabelFontSize: 10, showTitle: true, title: "Tasks created vs closed", titleFontSize: 13 });
+        foot(s, n);
+      }
+      // content
+      (rep.slides.slides || []).forEach((sl) => {
+        s = pp.addSlide(); n++;
+        s.addShape(pp.ShapeType.rect, { x: 0, y: 0, w: 0.18, h: 7.5, fill: { color: IND }, line: { color: IND } });
+        s.addText(sl.title || "", { x: 0.6, y: 0.4, w: 12, h: 0.9, fontSize: 28, bold: true, color: INK, fontFace: F });
+        s.addText((sl.bullets || []).map((t) => ({ text: t, options: { bullet: { code: "25CF" }, paraSpaceAfter: 10 } })), { x: 0.7, y: 1.5, w: 11.8, h: 5.2, fontSize: 19, color: INK, fontFace: F, valign: "top" });
+        if (sl.notes) s.addNotes(sl.notes);
+        foot(s, n);
+      });
+      // achievements
+      const wins = (db.wins || []).filter((w) => new Date(w.date) >= new Date(rep.from) && new Date(w.date) <= new Date(new Date(rep.to).getTime() + 86400000)).slice(-6);
+      if (wins.length) {
+        s = pp.addSlide(); n++;
+        s.addText("Achievements", { x: 0.6, y: 0.4, w: 12, h: 0.8, fontSize: 28, bold: true, color: INK, fontFace: F });
+        s.addText(wins.map((w) => ({ text: w.text, options: { bullet: { code: "2605" }, paraSpaceAfter: 10 } })), { x: 0.7, y: 1.5, w: 11.8, h: 5.2, fontSize: 19, color: INK, fontFace: F, valign: "top" });
+        foot(s, n);
+      }
+      // close
+      s = pp.addSlide(); n++; s.background = { color: IND };
+      s.addText("Next step", { x: 0.8, y: 2.3, w: 11, h: 0.5, fontSize: 14, bold: true, color: "DCD9FF", charSpacing: 4, fontFace: F });
+      s.addText(rep.slides.closing || "Thank you", { x: 0.8, y: 2.9, w: 11.5, h: 2, fontSize: 32, bold: true, color: "FFFFFF", fontFace: F, valign: "top" });
+      const b64 = await pp.write({ outputType: "base64" });
+      const file = "ppt_" + rep.id + ".pptx";
+      if (!A.writeBase64(RS.id, file, b64)) throw new Error("Could not save the slides");
+      rep.ppt = file; save();
+      if (!quiet) A.exportFile(RS.id, file, repFile(rep, "pptx"));
+      return file;
+    } catch (e) { toast(e.message); return null; }
+    finally { pptBusy = ""; if (view === "reports") render(); }
+  }
+  async function reportPack(rep) {
+    toast("Preparing PDF, slides and email…");
+    window.__quietPdf = true; const r = await reportPdf(rep, true); window.__quietPdf = false;
+    const ppt = rep.ppt && A.exists(RS.id, rep.ppt) ? rep.ppt : await reportPpt(rep, true);
+    const txt = "mail_" + rep.id + ".txt";
+    A.writeText(RS.id, txt, `To: ${rep.to_ || db.settings.managerEmail || ""}\nSubject: ${rep.subject}\n\n${rep.body}`);
+    const files = [[txt, repFile(rep, "txt").replace(".txt", " - email.txt")]]; if (ppt) files.push([ppt, repFile(rep, "pptx")]);
+    exportDone = () => { toast(`Saved to Downloads/Memora/Reports: ${r && r.ok ? "PDF, " : ""}${ppt ? "slides, " : ""}email`); A.composeEmail(rep.to_ || db.settings.managerEmail || "", rep.subject, rep.body); };
+    A.exportFiles(RS.id, JSON.stringify(files), "Reports");
+  }
+  function winsSheet() {
+    const list = (db.wins || []).slice().sort((a, b) => b.date.localeCompare(a.date));
+    const sh = sheet(`<h3>Achievements bank</h3><p class="sub">Collected automatically from your meetings and reports — your ready list for appraisals and yearly reviews.</p>
+      <div class="row"><input class="inp" id="wnew" placeholder="Add an achievement"><button class="btn gold" style="flex:none;width:auto;padding:0 16px" data-wadd>${ic("plus")}</button></div>
+      <div style="margin-top:12px">${list.map((w) => `<div class="agi"><span class="chip gold">${fmtDue(w.date.slice(0, 10))}</span><div><b>${esc(w.text)}</b><span>${w.source === "meeting" && sess(w.ref) ? esc(sess(w.ref).title) : w.source === "report" ? "From a report" : "Added by you"}</span></div><button class="iconbtn" style="width:30px;height:30px;box-shadow:none" data-wdel="${w.id}">${ic("trash")}</button></div>`).join("") || `<div class="empty">No achievements yet — they appear as your meetings close deals and tasks.</div>`}</div>`);
+    $("[data-wadd]", sh).onclick = () => { addWin($("#wnew").value, nowISO(), "manual"); save(); winsSheet(); };
+    $$("[data-wdel]", sh).forEach((b) => (b.onclick = () => { db.wins = db.wins.filter((w) => w.id !== b.dataset.wdel); save(); winsSheet(); }));
   }
   VIEWS.reports = () => {
     const st = db.settings, reps = (db.reports || []).slice().sort((a, b) => b.at.localeCompare(a.at));
-    const cur = reps.find((x) => x.id === repOpen) || reps[0] || null;
-    const card = (kind, title, sub) => {
-      const r = repRange(kind), a = activity(r.from, r.to).n, busy = repBusy === kind;
-      return `<div class="card rcard"><div class="eyebrow">${ic(kind === "week" ? "cal" : "list")} ${title}</div>
-        <div class="meta" style="margin:6px 0 10px">${esc(r.label)}</div>
-        <div class="mini"><span><b>${a.meetings}</b> meetings</span><span><b>${a.closed}</b> closed</span><span><b>${a.pending}</b> pending</span><span><b>${a.manager}</b> for manager</span></div>
-        <p class="sub" style="margin:8px 0 12px">${sub}</p>
-        <button class="btn ${busy ? "line" : "gold"} block" data-rep="${kind}" ${repBusy ? "disabled" : ""}>${busy ? "Writing from all your meetings…" : ic("spark") + " Create " + (kind === "week" ? "weekly update" : "monthly report")}</button></div>`;
-    };
-    return `<div class="top"><div class="brand">Reports</div></div>
-      <div class="card" style="padding:12px 14px"><div class="row"><div class="field" style="margin:0"><label>Manager name</label><input class="inp" id="mgn" value="${esc(st.managerName || "")}" placeholder="Optional"></div>
-      <div class="field" style="margin:0"><label>Manager email</label><input class="inp" id="mge" value="${esc(st.managerEmail || "")}" placeholder="Optional"></div></div></div>
-      ${card("week", "Weekly update", "Everything you did this week — meetings, outcomes, closed and pending tasks, blockers and support needed — as a mail draft for your manager.")}
-      ${card("month", "Monthly report", "The last 4 weeks combined, week by week, with numbers, achievements, risks and next month's focus.")}
+    const P = period(repKind, repBack), Q = period(repKind, repBack + 1), c = pStats(P), pv = pStats(Q);
+    const forP = reps.find((r) => r.kind === repKind && r.label === P.label);
+    const cur = (repOpen && reps.find((x) => x.id === repOpen)) || forP || null;
+    const backL = { week: ["This week", "Last week"], month: ["Last 4 weeks", "4 weeks before"], quarter: ["This quarter", "Last quarter"], year: ["This year", "Last year"] }[repKind];
+    const tile = (v, l, p, suf) => `<div class="stat"><b>${v == null ? "—" : v + (suf || "")}</b><span>${l}</span>${p !== undefined && delta(v, p) ? `<em class="${v > p ? "up" : v < p ? "dn" : ""}">${delta(v, p)}</em>` : ""}</div>`;
+    const wins = db.wins || [];
+    return `<div class="top"><div class="brand">Reports</div><button class="iconbtn" data-rset title="Report settings">${ic("gear")}</button></div>
+      <div class="segs four">${Object.entries(KINDS).map(([k, l]) => `<button class="seg ${repKind === k ? "on" : ""}" data-rk="${k}">${l}</button>`).join("")}</div>
+      <div class="langs" style="margin-top:-6px">${backL.map((l, i) => `<button class="lang ${repBack === i ? "on" : ""}" data-rb="${i}">${l}</button>`).join("")}</div>
+      <div class="card rcard"><div class="eyebrow">${ic(repKind === "week" ? "cal" : "list")} ${KINDS[repKind]} report</div>
+        <div class="meta" style="margin:6px 0 10px">${esc(P.label)} <span style="opacity:.7">· vs ${esc(Q.label)}</span></div>
+        <div class="stats four" style="margin-top:0">${tile(c.meetings, "Meetings", pv.meetings)}${tile(c.closed, "Closed", pv.closed)}${tile(c.rate, "Done rate", pv.rate, "%")}${tile(c.pending, "Pending")}</div>
+        <button class="btn ${repBusy ? "line" : "gold"} block" style="margin-top:12px" data-rep ${repBusy ? "disabled" : ""}>${repBusy === repKind ? "Writing from all your meetings…" : ic("spark") + (forP ? " Create again" : " Create " + KINDS[repKind].toLowerCase() + " report")}</button></div>
       ${repErr ? `<div class="card" style="margin-top:10px;color:var(--rec)">${esc(repErr)}</div>` : ""}
-      ${cur ? `<h2 class="sec">${cur.kind === "week" ? "Weekly update" : "Monthly report"} · ${esc(cur.label || fmtDate(cur.at))}</h2>
-        ${(cur.highlights || []).length ? `<div class="card insq" style="margin-bottom:10px"><ul class="ol">${cur.highlights.map((h) => `<li>${esc(h)}</li>`).join("")}</ul></div>` : ""}
+      ${cur ? `<h2 class="sec">${KINDS[cur.kind]} · ${esc(cur.label)}</h2>
+        ${cur.headline ? `<div class="card insq" style="margin-bottom:10px"><b>${esc(cur.headline)}</b>${(cur.highlights || []).length ? `<ul class="ol">${cur.highlights.map((h) => `<li>${esc(h)}</li>`).join("")}</ul>` : ""}</div>` : ""}
+        <div class="actions" style="margin-top:0">
+          <button class="act" data-rpdf>${ic("file")}PDF</button>
+          <button class="act" data-rppt ${pptBusy ? "disabled" : ""}>${ic("image")}${pptBusy === cur.id ? "Building…" : cur.ppt ? "PPT ✓" : "PPT"}</button>
+          <button class="act hi" data-rpack>${ic("down")}Pack</button>
+          <button class="act" data-rsend>${ic("mail")}Email</button></div>
         <div class="field"><label>To</label><input class="inp" id="rto" value="${esc(cur.to_ || st.managerEmail || "")}" placeholder="manager@company.com"></div>
         <div class="field"><label>Subject</label><input class="inp" id="rsub" value="${esc(cur.subject)}"></div>
-        <div class="field"><label>Message</label><textarea class="inp" id="rbody" style="height:380px;line-height:1.55">${esc(cur.body)}</textarea></div>
+        <div class="field"><label>Message</label><textarea class="inp" id="rbody" style="height:360px;line-height:1.55">${esc(cur.body)}</textarea></div>
         <div class="row"><button class="btn line" data-rcopy>${ic("copy")} Copy</button><button class="btn line" data-rshare>${ic("share")} Share</button></div>
-        <button class="btn gold block" style="margin-top:8px" data-rsend>${ic("mail")} Open in email app</button>
-        <p class="tip">Edits are saved automatically.</p>` : `<div class="card empty" style="margin-top:14px"><div class="big">No reports yet</div>Record your meetings — Memora turns them into your weekly and monthly manager updates.</div>`}
-      ${reps.length > 1 ? `<h2 class="sec">Earlier reports</h2><div class="list">${reps.filter((x) => !cur || x.id !== cur.id).slice(0, 12).map((x) => `<button class="item" data-ropen="${x.id}"><div class="ic" style="color:var(--gold)">${ic(x.kind === "week" ? "cal" : "list")}</div><div class="tx"><div class="t1">${esc(x.subject)}</div><div class="t2">${x.kind === "week" ? "Weekly" : "Monthly"} · ${fmtDate(x.at)}</div></div></button>`).join("")}</div>` : ""}`;
+        <p class="tip">Pack saves the PDF, the slides and the email text to Downloads/Memora/Reports and opens the email. Edits are saved automatically.</p>` : `<div class="card empty" style="margin-top:14px"><div class="big">No ${KINDS[repKind].toLowerCase()} report yet</div>Memora builds it from your recorded meetings and tasks${repKind !== "week" ? ", combining the smaller periods inside it" : ""}.</div>`}
+      <h2 class="sec">Achievements bank <button data-wins>${wins.length ? "See all " + wins.length : "Add"}</button></h2>
+      <div class="card" style="padding:6px 14px">${wins.slice(-3).reverse().map((w) => `<div class="agi"><span class="chip gold">${ic("star")}</span><div><b>${esc(w.text)}</b><span>${fmtDate(w.date)}</span></div></div>`).join("") || `<div class="empty" style="padding:12px 0">Wins from your meetings collect here automatically — ready for your yearly review.</div>`}</div>
+      ${reps.filter((x) => !cur || x.id !== cur.id).length ? `<h2 class="sec">Earlier reports</h2><div class="list">${reps.filter((x) => !cur || x.id !== cur.id).slice(0, 15).map((x) => `<button class="item" data-ropen="${x.id}"><div class="ic" style="color:var(--gold)">${ic(x.kind === "week" ? "cal" : "list")}</div><div class="tx"><div class="t1">${esc(x.subject)}</div><div class="t2">${KINDS[x.kind]} · ${esc(x.label)}</div></div>${x.ppt ? `<span class="chip">PPT</span>` : ""}</button>`).join("")}</div>` : ""}`;
   };
   BIND.reports = (app) => {
     const st = db.settings;
-    $("#mgn", app).onchange = (e) => { st.managerName = e.target.value.trim(); save(); };
-    $("#mge", app).onchange = (e) => { st.managerEmail = e.target.value.trim(); save(); };
-    $$("[data-rep]", app).forEach((b) => (b.onclick = () => makeReport(b.dataset.rep)));
-    $$("[data-ropen]", app).forEach((b) => (b.onclick = () => { repOpen = b.dataset.ropen; render(); window.scrollTo(0, 0); }));
+    $$("[data-rk]", app).forEach((b) => (b.onclick = () => { repKind = b.dataset.rk; repBack = 0; repOpen = ""; render(); }));
+    $$("[data-rb]", app).forEach((b) => (b.onclick = () => { repBack = +b.dataset.rb; repOpen = ""; render(); }));
+    $("[data-rep]", app).onclick = () => makeReport(repKind, repBack);
+    $("[data-wins]", app).onclick = winsSheet;
+    $("[data-rset]", app).onclick = () => {
+      const sh = sheet(`<h3>Report settings</h3><p class="sub">Used on the cover, in the email and in the slides.</p>
+        <div class="field"><label>Your role</label><input class="inp" id="rrole" value="${esc(st.role || "")}" placeholder="e.g. Key Account Manager, Chennai"></div>
+        <div class="row"><div class="field"><label>Manager name</label><input class="inp" id="mgn" value="${esc(st.managerName || "")}"></div><div class="field"><label>Manager email</label><input class="inp" id="mge" value="${esc(st.managerEmail || "")}"></div></div>
+        <div class="field"><label>Year starts in</label><select class="inp" id="rfy"><option value="3" ${fyM() === 3 ? "selected" : ""}>April (financial year)</option><option value="0" ${fyM() === 0 ? "selected" : ""}>January (calendar year)</option></select></div>
+        <button class="btn gold block" data-ok>Save</button>`);
+      $("[data-ok]", sh).onclick = () => { st.role = $("#rrole").value.trim(); st.managerName = $("#mgn").value.trim(); st.managerEmail = $("#mge").value.trim(); st.fyStart = +$("#rfy").value; save(); closeSheet(); render(); };
+    };
+    $$("[data-ropen]", app).forEach((b) => (b.onclick = () => { const r = (db.reports || []).find((x) => x.id === b.dataset.ropen); if (r) { repKind = r.kind; repBack = r.back || 0; } repOpen = b.dataset.ropen; render(); window.scrollTo(0, 0); }));
     const reps = (db.reports || []).slice().sort((a, b) => b.at.localeCompare(a.at));
-    const cur = reps.find((x) => x.id === repOpen) || reps[0];
+    const P = period(repKind, repBack);
+    const cur = (repOpen && reps.find((x) => x.id === repOpen)) || reps.find((r) => r.kind === repKind && r.label === P.label);
     if (!cur) return;
     const keep = () => { cur.subject = $("#rsub").value; cur.body = $("#rbody").value; cur.to_ = $("#rto").value.trim(); save(); };
     ["#rto", "#rsub", "#rbody"].forEach((k) => ($(k, app).onchange = keep));
     $("[data-rcopy]", app).onclick = () => { keep(); A.copyText(`Subject: ${cur.subject}\n\n${cur.body}`); toast("Copied"); };
     $("[data-rshare]", app).onclick = () => { keep(); A.shareText(`${cur.subject}\n\n${cur.body}`); };
     $("[data-rsend]", app).onclick = () => { keep(); A.composeEmail(cur.to_ || "", cur.subject, cur.body); };
+    $("[data-rpdf]", app).onclick = () => { keep(); reportPdf(cur, false); };
+    $("[data-rppt]", app).onclick = () => { keep(); if (cur.ppt && A.exists(RS.id, cur.ppt)) A.exportFile(RS.id, cur.ppt, repFile(cur, "pptx")); else reportPpt(cur, false); };
+    $("[data-rpack]", app).onclick = () => { keep(); reportPack(cur); };
   };
 
   // ---------- meeting insights tab

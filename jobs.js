@@ -158,7 +158,7 @@
       await this.w("followups.json", JSON.stringify(out.followups || []));
       await this.w("agenda.json", JSON.stringify(out.agenda || []));
       await this.w("meta.json", JSON.stringify({ title: out.title || "", titles: out.titles || [] }));
-      const extra = {}; for (const k of ["people", "decisions", "remember", "nextMeeting", "insights", "titles"]) if (out[k] !== undefined) extra[k] = out[k];
+      const extra = {}; for (const k of ["people", "decisions", "remember", "nextMeeting", "insights", "titles", "wins"]) if (out[k] !== undefined) extra[k] = out[k];
       await this.w("meeting.json", JSON.stringify(extra));
       await this.w("summary.md", out.summary || "");
     }

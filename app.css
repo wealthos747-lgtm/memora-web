@@ -462,3 +462,7 @@ h2.sec button svg { width: 13px; height: 13px; }
 .lang svg { width: 13px; height: 13px; vertical-align: -2px; }
 .status svg { flex: none; }
 .person b .rl { font-weight: 500; font-size: 12px; }
+.stat em { display: block; font-style: normal; font-size: 10px; font-weight: 700; color: var(--muted); margin-top: 2px; }
+.stat em.up { color: var(--ok); }
+.stat em.dn { color: var(--rec); }
+.act[disabled] { opacity: .5; }

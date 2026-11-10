@@ -42,7 +42,7 @@
   const listFiles = (sid) => { const p = sid + "/"; const out = []; for (const k of text.keys()) if (k.startsWith(p)) out.push(k.slice(p.length)); for (const k of blobs.keys()) if (k.startsWith(p)) out.push(k.slice(p.length)); return out; };
   const segments = (sid) => listFiles(sid).filter((n) => /^seg_\d+\.(mp3|webm|m4a)$/.test(n)).sort();
   const mainAudio = (sid) => listFiles(sid).find((n) => /^audio\./.test(n) && getBlob(sid, n)) || "";
-  const mimeFor = (n) => { n = n.toLowerCase(); if (n.endsWith(".mp3")) return "audio/mpeg"; if (n.endsWith(".m4a") || n.endsWith(".mp4") || n.endsWith(".aac")) return "audio/mp4"; if (n.endsWith(".wav")) return "audio/wav"; if (n.endsWith(".ogg") || n.endsWith(".opus")) return "audio/ogg"; if (n.endsWith(".webm")) return "audio/webm"; if (n.endsWith(".flac")) return "audio/flac"; if (n.endsWith(".pdf")) return "application/pdf"; if (/\.(jpe?g)$/.test(n)) return "image/jpeg"; if (n.endsWith(".png")) return "image/png"; if (n.endsWith(".md") || n.endsWith(".txt")) return "text/plain"; return "application/octet-stream"; };
+  const mimeFor = (n) => { n = n.toLowerCase(); if (n.endsWith(".mp3")) return "audio/mpeg"; if (n.endsWith(".m4a") || n.endsWith(".mp4") || n.endsWith(".aac")) return "audio/mp4"; if (n.endsWith(".wav")) return "audio/wav"; if (n.endsWith(".ogg") || n.endsWith(".opus")) return "audio/ogg"; if (n.endsWith(".webm")) return "audio/webm"; if (n.endsWith(".flac")) return "audio/flac"; if (n.endsWith(".pdf")) return "application/pdf"; if (/\.(jpe?g)$/.test(n)) return "image/jpeg"; if (n.endsWith(".png")) return "image/png"; if (n.endsWith(".md") || n.endsWith(".txt")) return "text/plain"; if (n.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation"; return "application/octet-stream"; };
   const fmtTime = (ms) => { const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; const p = (n) => String(n).padStart(2, "0"); return h ? `${h}:${p(m)}:${p(x)}` : `${p(m)}:${p(x)}`; };
   function durationOf(blob) {
     return new Promise((res) => {
@@ -55,7 +55,7 @@
   }
   function download(blob, name) {
     if (blob.type === "audio/mpeg") name = name.replace(/\.m4a$/i, ".mp3");
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name.replace(/[\\/:*?"<>|]+/g, "-");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name.replace(/[–—·]/g, "-").replace(/[\\/:*?"<>|]+/g, "-");
     document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
   }
   function pickFile(accept) {
@@ -374,10 +374,11 @@
     exportFile: (sid, n, display) => { const b = getBlob(sid, n) || (text.get(K(sid, n)) != null ? new Blob([text.get(K(sid, n))], { type: "text/markdown" }) : null); if (!b) { toastMsg("File not ready yet"); return ""; } download(b, display); toastMsg("Downloading…"); return "started"; },
     exportFiles: async (sid, items, folder) => {
       const list = J(items, []); let ok = 0;
-      for (let i = 0; i < list.length; i++) { call("onDlProgress", i, list.length); const [n, d] = list[i]; const b = getBlob(sid, n); if (b) { download(b, d); ok++; await sleep(700); } }
+      for (let i = 0; i < list.length; i++) { call("onDlProgress", i, list.length); const [n, d] = list[i]; const b = getBlob(sid, n) || (text.get(K(sid, n)) != null ? new Blob([text.get(K(sid, n))], { type: "text/plain" }) : null); if (b) { download(b, d); ok++; await sleep(700); } }
       call("onExported", ok, list.length, folder);
     },
     shareFile: (sid, n, display) => window.Android.exportFile(sid, n, display),
+    writeBase64: (sid, n, b64) => { try { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); setBlob(K(sid, n), new Blob([u], { type: mimeFor(n) })); return true; } catch (e) { return false; } },
     shareText: async (t) => { try { if (navigator.share) await navigator.share({ text: t }); else { await navigator.clipboard.writeText(t); toastMsg("Copied — paste it anywhere"); } } catch (e) { } },
     copyText: async (t) => { try { await navigator.clipboard.writeText(t); toastMsg("Copied"); } catch (e) { toastMsg("Couldn't copy"); } },
     composeEmail: (to, subject, body) => { window.location.href = `mailto:${encodeURIComponent(to || "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`; },
