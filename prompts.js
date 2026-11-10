@@ -17,7 +17,6 @@ const Prompts = {
                 + "7. KEEP every question, answer, comment and discussion between students and the teacher, and every class discussion — label each speaker. Skip only private chatter between students that is not addressed to the teacher or the class, phone calls, and background noise. Mark unclear words as [inaudible]; note long breaks as [break].\n"
                 + "8. Output only the transcript, no introduction or closing remarks.";
     },
-
     summary(ctx, bookmarks, lang) {
         return "You are an expert academic note-taker. Create study notes for a student who will NOT listen to this class again, so the notes must capture EVERYTHING that was taught.\n\n"
                 + ctx + "\n" + bookmarks + "\n"
@@ -37,7 +36,6 @@ const Prompts = {
                 + "## Quick revision\n10–15 crisp one-line points to revise in two minutes.\n\n"
                 + "Output only the Markdown notes.";
     },
-
     narration(lang) {
         return "Turn the class notes below into a spoken audio script in " + lang + " that the student will listen to while travelling, instead of reading the notes.\n"
                 + "Rules:\n"
@@ -50,13 +48,11 @@ const Prompts = {
                 + "- Separate ideas into short paragraphs.\n"
                 + "Output only the script.";
     },
-
     langDesc(langName) {
         if (langName.toLowerCase().includes("tanglish"))
             return "Tanglish — the Tamil language written in English (Latin) letters, in the natural, casual spoken style used in Tamil Nadu, keeping English technical terms in English";
         return langName;
     },
-
     translateNotes(langName) {
         return "Translate the following Markdown study notes into " + Prompts.langDesc(langName) + ".\n"
                 + "- Translate everything fully. Do not shorten, summarise or drop any point.\n"
@@ -65,7 +61,6 @@ const Prompts = {
                 + "- Use simple, natural, easy-to-understand language.\n"
                 + "Output only the translated Markdown.";
     },
-
     translateScript(langName) {
         return "Translate the following spoken audio script into " + Prompts.langDesc(langName) + ".\n"
                 + "- Keep every sentence and point; do not shorten.\n"
@@ -73,7 +68,6 @@ const Prompts = {
                 + "- Keep English technical terms where a listener would expect them.\n"
                 + "Output only the translated script.";
     },
-
     transcribeMeeting(ctx, parts) {
         return "You are a meticulous professional transcriptionist.\n"
                 + "The attached audio " + (parts > 1 ? "files are " + parts + " consecutive parts" : "file is a recording") + " of ONE meeting recorded on a phone.\n"
@@ -81,32 +75,43 @@ const Prompts = {
                 + "Produce a COMPLETE, faithful, near-verbatim transcript of everything that is said.\n"
                 + "Rules:\n"
                 + "1. Never summarise, shorten or skip anything — every point, number, name, date, commitment, question and answer must be in the transcript.\n"
-                + "2. Write in the language actually spoken. If speakers mix Tamil or another language with English, write those words as spoken.\n"
+                + "2. Write in the language actually spoken. If speakers mix Tamil and English, keep it as spoken and write the Tamil words in English letters (Tanglish) so it reads naturally.\n"
+                + "   The title and agenda above are only hints: transcribe what is really said, even if it is about something else.\n"
                 + "3. Label every speaker in bold at the start of a paragraph. Use the person's real name when it is clear (they introduce themselves, are addressed by name, or match the attendee list); otherwise use **Speaker 1:**, **Speaker 2:** consistently.\n"
                 + "4. Start EVERY paragraph with a timestamp in exactly this form: [P1 MM:SS] where the number after P is the part number and MM:SS is the time from the start of THAT part (use [P1 H:MM:SS] after one hour).\n"
                 + "5. New paragraph whenever the speaker changes, and at least every 60 seconds.\n"
-                + "6. Mark unclear words as [inaudible]. Skip silence, unrelated background noise and side conversations of people who are not part of the meeting.\n"
+                + "6. Mark unclear words as [inaudible]. Skip only silence and pure background noise. Keep EVERYTHING that is said by the people in the meeting, including short remarks, side questions, phone conversations about the topic, numbers and names — nothing they say is unimportant.\n"
                 + "7. Output only the transcript.";
     },
-
     meeting(ctx, bookmarks, openTasks, lang, me, today) {
-        return "You are an expert executive assistant. From the meeting transcript below, prepare the complete meeting outputs.\n\n"
+        return "You are the user's chief of staff. Below is the full time-stamped transcript of one meeting the user recorded. Prepare complete, accurate meeting outputs.\n\n"
                 + ctx + "\n" + bookmarks + "\n"
                 + "Today's date: " + today + ". The user (who recorded the meeting and will send the email) is: " + (me.length > 0 ? me : "the user") + ".\n\n"
-                + (openTasks.length > 0 ? "OPEN FOLLOW-UP TASKS from earlier meetings (each has an id):\n" + openTasks + "\nFor each of these tasks that was discussed in THIS meeting, report its new status. Mark it done ONLY if the transcript clearly says it is completed/closed.\n\n" : "")
-                + "Write everything in " + lang + ". Be complete and specific: real names, numbers, dates and commitments. Never invent anything that was not said; write 'Not mentioned' where needed.\n\n"
+                + "GROUNDING RULES (most important):\n"
+                + "- The title, type and planned agenda above are only hints the user typed in a hurry. NEVER write generic content about the title topic. Every point must be something actually said in the transcript.\n"
+                + "- If the discussion covers different topics than the title or agenda, follow the transcript, and say which planned items were not discussed.\n"
+                + "- Read the WHOLE transcript before writing. Do not skip any part: small asks, numbers, names, places, prices, dates, complaints and promises all matter.\n"
+                + "- After every key point, decision and task, add the timestamp where it was said, copied from the transcript in the form [MM:SS] or [H:MM:SS].\n"
+                + "- Speakers may mix Tamil and English. Understand both; write the outputs in " + lang + ".\n"
+                + "- Never invent anything. If something important was unclear or [inaudible], list it under 'Unclear parts' with its timestamp instead of guessing.\n\n"
+                + (openTasks.length > 0 ? "OPEN FOLLOW-UP TASKS from earlier meetings (each has an id):\n" + openTasks + "\nFor each of these tasks that was discussed in THIS meeting, report its new status: done ONLY if the transcript clearly says it is completed; pending if it is stuck or delayed (say why and who must act); open if discussed but still in progress.\n\n" : "")
                 + "Return ONLY a JSON object with exactly these keys:\n"
                 + "{\n"
-                + "  \"title\": short meeting title (max 8 words),\n"
-                + "  \"summary\": Markdown string — '## Summary' (5–8 sentence overview), '## Key discussion points' (detailed bullets by topic, with approx timestamps like (≈ 12:30)), '## Decisions' (bullets), '## Risks & open questions', '## Next steps',\n"
-                + "  \"mom\": Markdown string — formal Minutes of Meeting: '# Minutes of Meeting', a details list (Title, Date, Type, Attendees, Recorded by), '## Agenda' as a table | # | Agenda item | Status (Completed / Partly done / Pending) | Outcome |, '## Discussion' (per agenda item / topic, concise but complete, with who said what), '## Decisions', '## Action items' as a table | # | Action | Owner | Due date | Status |, '## Follow-ups from earlier meetings' (only if open tasks were given), '## Next meeting',\n"
-                + "  \"agenda\": [ { \"item\": string, \"status\": \"done\" | \"partial\" | \"pending\", \"note\": short outcome } ] — use the given agenda if any, otherwise infer the agenda from the discussion,\n"
-                + "  \"actions\": [ { \"task\": clear actionable task, \"owner\": person's name or \"\", \"due\": \"YYYY-MM-DD\" or \"\" } ] — every commitment and to-do from the meeting, PLUS one follow-up task for every agenda item that is not fully completed. Resolve relative dates ('next Friday') using today's date,\n"
-                + "  \"followups\": [ { \"id\": id of an open task above, \"status\": \"done\" | \"open\", \"note\": what was said about it } ] — [] if none were discussed,\n"
-                + "  \"email\": { \"subject\": email subject, \"body\": plain-text email the user can send to all attendees: greeting, one-line purpose, short summary, decisions, action items with owner and due date, pending agenda items for next meeting, polite sign-off with the user's name }\n"
+                + "  \"titles\": [3 short, specific title options (max 8 words each) that describe what was ACTUALLY discussed, best first],\n"
+                + "  \"title\": the best of those titles,\n"
+                + "  \"summary\": Markdown string — '## In one line' (the single most important outcome), '## Key discussion points' (detailed bullets grouped by topic in the order discussed, each with [MM:SS]), '## Decisions', '## Numbers & facts mentioned' (every figure, price, date, place, name), '## Risks & open questions', '## Next steps', and '## Unclear parts' only if any,\n"
+                + "  \"mom\": Markdown string — formal Minutes of Meeting: '# Minutes of Meeting', a details list (Title, Date, Type, Attendees, Recorded by), '## Agenda' as a table | # | Agenda item | Status (Completed / Partly done / Pending / Not discussed) | Outcome |, '## Discussion' (per topic, concise but complete, with who said what and [MM:SS]), '## Decisions', '## Action items' as a table | # | Action | Owner | Due date | Status |, '## Follow-ups from earlier meetings' (only if open tasks were given), '## Next meeting',\n"
+                + "  \"people\": [ { \"name\": person who spoke or was discussed, \"role\": their role or company if said, else \"\", \"points\": their main points, asks or concerns in one line, \"commitments\": what they promised, or \"\" } ],\n"
+                + "  \"agenda\": [ { \"item\": string, \"status\": \"done\" | \"partial\" | \"pending\", \"note\": short outcome, \"at\": \"MM:SS\" or \"\" } ] — use the given agenda if any (mark items not discussed as pending with note 'Not discussed'), otherwise derive the agenda from what was discussed,\n"
+                + "  \"decisions\": [ { \"text\": decision, \"at\": \"MM:SS\" } ],\n"
+                + "  \"actions\": [ { \"task\": clear actionable task, \"owner\": person's name or \"\", \"due\": \"YYYY-MM-DD\" or \"\", \"priority\": \"high\" | \"medium\" | \"low\", \"mine\": true if the user owns it, \"manager\": true if it needs the user's manager or leadership to approve, support or know, \"why\": one line of context from the discussion, \"at\": \"MM:SS\" } ] — every commitment and to-do, PLUS one follow-up task for every agenda item that is not fully completed. Resolve relative dates ('next Friday') using today's date,\n"
+                + "  \"followups\": [ { \"id\": id of an open task above, \"status\": \"done\" | \"open\" | \"pending\", \"note\": what was said about it, \"reason\": why it is pending or \"\", \"followWith\": who must be chased or \"\" } ] — [] if none were discussed,\n"
+                + "  \"remember\": [ { \"text\": an important input the user must not forget (a promise made to them, a number, a deadline, a personal detail of a client, a condition), \"date\": \"YYYY-MM-DD\" when to remind, or \"\" } ],\n"
+                + "  \"nextMeeting\": { \"date\": \"YYYY-MM-DD\" or \"\", \"time\": \"HH:MM\" (24h) or \"\", \"with\": names, \"topics\": [topics to cover next time] } — only what was said or clearly implied; empty strings if not mentioned,\n"
+                + "  \"insights\": { \"clarity\": one sentence: where this matter stands now and the single most important thing the user should do next, \"direction\": [3 to 5 specific, practical bullets of guidance grounded in what was said], \"risks\": [short bullets], \"opportunities\": [short bullets], \"myShare\": rough percentage of the talking done by the user (number 0-100) or null if unknown, \"tone\": \"positive\" | \"neutral\" | \"tense\" },\n"
+                + "  \"email\": { \"subject\": email subject, \"body\": plain-text email the user can send to all attendees: greeting, one-line purpose, short summary, decisions, action items with owner and due date, pending items for next meeting, polite sign-off with the user's name }\n"
                 + "}";
     },
-
     narrationMeeting(lang) {
         return "Turn the meeting summary and minutes below into a spoken audio recap in " + lang + " for the user to listen to while travelling.\n"
                 + "- Keep every decision, action item (with owner and due date), pending agenda item and follow-up. Do not skip anything.\n"
@@ -114,7 +119,6 @@ const Prompts = {
                 + "- Plain text only: no markdown, symbols, tables, emojis or timestamps. Short paragraphs.\n"
                 + "Output only the script.";
     },
-
     quiz() {
         return "Create revision material from the class notes and transcript below, so the student can test themselves.\n"
                 + "Return ONLY a JSON object: {\n"
@@ -122,23 +126,20 @@ const Prompts = {
                 + "  \"cards\": 12 to 20 flashcards for key terms, definitions, frameworks and examples, each { \"front\": short prompt, \"back\": crisp answer }\n"
                 + "}\nUse only what was taught. Mix easy and exam-level questions. Write in English.";
     },
-
     pack(subject, range, n) {
-        const week = ("week" === range);
+        const week = "week" === (range);
         return "You are an expert tutor. Below are the notes of " + n + " classes of the subject \"" + subject + "\"" + (week ? " from the last 7 days" : "") + ".\n"
                 + "Write ONE complete " + (week ? "weekly recap" : "study guide") + " in clean Markdown, organised by TOPIC (not by class), merging repeated material.\n"
                 + "Keep every concept, definition, framework, example and announcement — completeness over brevity.\n"
                 + "Structure: '# " + subject + (week ? " — This week" : " — Study guide") + "', '## Classes covered' (list with dates), '## Topic map' (how topics connect), then a '##' section per topic with detailed bullets and (Class N) references, '## Key terms', '## Assignments & deadlines', '## Likely exam questions' (with answer hints), '## 2-minute revision'.\n"
                 + "Output only the Markdown.";
     },
-
     fromAudio(layout) {
         return "\nSOURCE: the recording itself is attached below as consecutive audio parts (there is no transcript). Listen to ALL parts fully before writing.\n"
                 + layout
                 + "TIMESTAMPS: whenever you give a time, write it as [P2 12:30] — the part number and the time inside that part. Use this instead of the (≈ 12:30) form.\n"
                 + "Include every question, answer and discussion with the teacher / main speakers. Ignore only private side chatter not addressed to the class, phone calls, background noise and long silences.\n";
     },
-
     classBook(ctx, bookmarks, lang) {
         return "You are a brilliant teacher and textbook writer. Using the full class transcript below, write a CLASS BOOK: a chapter that lets the student feel they attended the class and understand every part of it clearly. (Questions and exam practice go in a separate Q&A Bank — do not include them here.)\n\n"
                 + ctx + "\n" + bookmarks + "\n"
@@ -161,7 +162,6 @@ const Prompts = {
                 + "## One-page revision sheet\n12–20 crisp lines covering the whole class.\n"
                 + "Output only the Markdown.";
     },
-
     qaBank(ctx, lang) {
         return "Using the full class transcript below, write a Q&A BANK for this class in " + lang + ", in clean Markdown. It is the student's companion to the Class Book: everything asked or discussed in class, plus exam practice.\n\n"
                 + ctx + "\n"
@@ -179,7 +179,6 @@ const Prompts = {
                 + "## How to write strong answers on this topic\n4–6 practical tips (keywords to use, diagrams/frameworks to draw, common mistakes).\n"
                 + "Output only the Markdown.";
     },
-
     replay(lang) {
         return "Recreate this class as a realistic CLASSROOM REPLAY audio script in " + lang + ", so the listener feels they are sitting in the class again.\n"
                 + "Two speakers only, written exactly as:\nTeacher: ...\nStudent: ...\n"
@@ -192,20 +191,22 @@ const Prompts = {
                 + "- Spoken words only: no markdown, no stage directions, no sound effects, no timestamps, no headings.\n"
                 + "Output only the script lines.";
     },
-
     cuts(meeting) {
-        return "You are a careful audio editor. Below is the time-stamped transcript of a " + (meeting ? "meeting" : "class") + " recording.\n"
+        if (meeting) return "You are a careful audio editor. Below is the time-stamped transcript of a meeting recording.\n"
+                + "List ONLY time ranges with NO useful speech: long silences, waiting, dead air, setup noise. NEVER cut anything that a person in the meeting says, even short remarks, side questions or small talk, because every word may matter.\n"
+                + "If unsure, KEEP it. Cut only gaps longer than 4 seconds, with a little margin.\n"
+                + "Return ONLY JSON: { \"cuts\": [ { \"start\": \"H:MM:SS or MM:SS\", \"end\": \"H:MM:SS or MM:SS\", \"reason\": short } ] }; { \"cuts\": [] } if nothing should be cut.";
+        return "You are a careful audio editor. Below is the time-stamped transcript of a class recording.\n"
                 + "List ONLY the time ranges that should be CUT to make a clean, focused version.\n"
                 + "CUT only:\n"
                 + "- breaks / waiting time / setup (mic, projector, laptop fiddling)\n"
-                + "- PRIVATE side conversations between people near the phone that are NOT addressed to the " + (meeting ? "meeting" : "teacher or the class") + "\n"
+                + "- PRIVATE side conversations between people near the phone that are NOT addressed to the teacher or the class\n"
                 + "- phone calls, unrelated chatter, attendance / roll call, long dead air\n"
                 + "ALWAYS KEEP (never cut):\n"
-                + "- everything the " + (meeting ? "main speakers say about the agenda" : "teacher teaches, explains, writes or announces") + "\n"
-                + "- EVERY question asked to the " + (meeting ? "group" : "professor") + ", every answer, every discussion, debate, opinion, case discussion or group activity involving the " + (meeting ? "participants" : "professor or the class") + "\n"
-                + "- jokes or stories that are part of the " + (meeting ? "discussion" : "lesson") + "\n"
+                + "- everything the teacher teaches, explains, writes or announces\n"
+                + "- EVERY question asked to the professor, every answer, every discussion, debate, opinion, case discussion or group activity involving the professor or the class\n"
+                + "- jokes or stories that are part of the lesson\n"
                 + "If you are not sure whether something is side talk or a real question/discussion, KEEP it. Cut whole sentences only, with a little margin.\n"
                 + "Return ONLY JSON: { \"cuts\": [ { \"start\": \"H:MM:SS or MM:SS\", \"end\": \"H:MM:SS or MM:SS\", \"reason\": short } ] } using the transcript's timestamps; { \"cuts\": [] } if nothing should be cut.";
     },
-
 };

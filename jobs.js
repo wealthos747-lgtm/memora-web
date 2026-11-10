@@ -111,7 +111,7 @@
     // ---------------------------------------------------------------- summary / meeting outputs
     async runSummary(force) {
       if (!this.key) throw new Error("Add your free Gemini AI key in Settings first.");
-      if (force) for (const n of ["transcript.md", "summary.md", "narration.txt", "summary_audio.m4a", "mom.md", "email.json", "actions.json", "followups.json", "agenda.json", "meta.json", ...listFiles(this.sid).filter((x) => x.startsWith("batch_"))]) await remove(K(this.sid, n));
+      if (force) for (const n of ["transcript.md", "summary.md", "narration.txt", "summary_audio.m4a", "mom.md", "email.json", "actions.json", "followups.json", "agenda.json", "meta.json", "meeting.json", ...listFiles(this.sid).filter((x) => x.startsWith("batch_"))]) await remove(K(this.sid, n));
       const lang = this.s.summaryLang || "English";
       let parts = null;
       if (!this.has("summary.md") || !this.has("transcript.md")) {
@@ -122,11 +122,11 @@
       // without Google's upload service (browser), long recordings go transcript-first
       const inline = parts && parts.some((p) => p.up && p.up.inline);
       const totalInline = parts ? parts.reduce((a, p) => a + (p.up && p.up.inline ? p.up.inline.length : 0), 0) : 0;
-      const thorough = this.s.quality === "thorough" || (inline && totalInline > 14e6);
+      const thorough = this.isMeeting() || this.s.quality === "thorough" || (inline && totalInline > 14e6);
       let tPromise = null;
       if (!thorough && parts && !this.has("transcript.md")) tPromise = this.transcribe(parts).catch((e) => e);
       if (!this.has("summary.md")) {
-        if (thorough && !this.has("transcript.md")) { this.phase(0.2, 0.55, "Transcribing class"); await this.transcribe(parts); }
+        if (thorough && !this.has("transcript.md")) { this.phase(0.2, 0.55, this.isMeeting() ? "Listening to every word" : "Transcribing class"); await this.transcribe(parts); }
         this.phase(thorough ? 0.55 : 0.2, 0.85, this.isMeeting() ? "Writing minutes, tasks & email" : "Writing detailed class notes");
         const src = this.has("transcript.md") ? [textPart("FULL TRANSCRIPT:\n\n" + this.f("transcript.md"))] : this.audioParts(parts);
         if (this.isMeeting()) await this.meetingOutputs(src, parts);
@@ -157,7 +157,9 @@
       await this.w("actions.json", JSON.stringify(out.actions || []));
       await this.w("followups.json", JSON.stringify(out.followups || []));
       await this.w("agenda.json", JSON.stringify(out.agenda || []));
-      await this.w("meta.json", JSON.stringify({ title: out.title || "" }));
+      await this.w("meta.json", JSON.stringify({ title: out.title || "", titles: out.titles || [] }));
+      const extra = {}; for (const k of ["people", "decisions", "remember", "nextMeeting", "insights", "titles"]) if (out[k] !== undefined) extra[k] = out[k];
+      await this.w("meeting.json", JSON.stringify(extra));
       await this.w("summary.md", out.summary || "");
     }
     async makeNarration(lang) {
@@ -470,7 +472,9 @@
         const tr = text.get(K(s.id, "transcript.md")); if (tr) trs.push([s.id, s.title, tr]);
       }
       for (const [id, t, tr] of trs) { const b = `\n\n=== TRANSCRIPT of id=${id} | ${t} ===\n${tr}`; if (used + b.length > 420000) continue; ctx += b; used += b.length; }
-      if (meet && (db.tickets || []).length) ctx += "\n\n=== TASK TRACKER ===\n" + db.tickets.filter((t) => !scope || t.series === scope).slice(0, 300).map((t) => `- [${t.status}] ${t.text} | owner: ${t.owner || "-"} | due: ${t.due || "-"} | from meeting id=${t.meetingId}`).join("\n");
+      if (meet && (db.tickets || []).length) ctx += "\n\n=== TASK TRACKER ===\n" + db.tickets.filter((t) => !scope || t.series === scope).slice(0, 300).map((t) => `- [${t.pending && t.status === "open" ? "pending" : t.status}] ${t.text} | owner: ${t.owner || "-"} | due: ${t.due || "-"}${t.pending ? ` | pending because: ${t.pending.reason || "-"} | follow up with: ${t.pending.followWith || "-"}` : ""}${t.manager ? " | needs manager alignment" : ""} | from meeting id=${t.meetingId}`).join("\n");
+      if (meet && (db.plans || []).length) ctx += "\n\n=== UPCOMING MEETINGS (lineup) ===\n" + db.plans.map((p) => `- ${p.at} | ${p.title} | with: ${p.attendees || "-"} | topics: ${p.topics || "-"}`).join("\n");
+      if (meet && (db.memos || []).length) ctx += "\n\n=== THINGS TO REMEMBER ===\n" + db.memos.map((m) => `- ${m.text}${m.date ? " (remind: " + m.date + ")" : ""} | from meeting id=${m.meetingId || "-"}`).join("\n");
       if (!count) return call("onAsk", { ok: true, answer: meet ? "I don't have any processed meetings yet." : "I don't have any processed classes yet." });
       const hist = J(historyJson, []).slice(-6).map((m) => (m.q ? "User: " + m.q + "\n" : "") + (m.a ? "Memora: " + m.a + "\n" : "")).join("");
       const instr = `You are Memora, the user's personal memory for their ${meet ? "MEETINGS (official and personal)" : "CLASSES (education)"}.\nAnswer ONLY from the records below (${count} ${meet ? "meetings" : "classes"}). Never use outside knowledge to fill gaps${meet ? "" : " — but you may explain a concept more simply if the user asks, as long as you say what was taught in class"}.\nIf the answer is not in the records, say clearly that you couldn't find it.\nBe specific: names, numbers, dates, who said it. Prefer short paragraphs and bullet points.\nAfter each fact, cite its source as [[ID|Title · date]] using the record id and title. Add the timestamp inside the label when known.\nReply in the same language and style the user writes in (English, Tamil or Tanglish).\n`;
@@ -480,7 +484,16 @@
   }
 
   // ---------------------------------------------------------------- public
+  async function gen(id, prompt, txt, json) {
+    try {
+      const st = settings(); const key = (st.apiKey || "").trim();
+      if (!key) throw new Error("Add your free Gemini AI key in Settings first.");
+      const out = await generate(key, st.model || "gemini-flash-latest", [textPart(prompt), textPart(txt)], 0.35, !!json);
+      call("onGen", id, { ok: true, text: out });
+    } catch (e) { call("onGen", id, { ok: false, msg: friendly(e) }); }
+  }
   window.MemoraJobs = {
+    gen,
     busy: () => active.size > 0,
     status(sid) {
       const o = J(text.get(K(sid, "status.json")), {});

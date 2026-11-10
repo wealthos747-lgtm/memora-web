@@ -111,10 +111,10 @@
       const rms = Math.sqrt(sum / FR);
       if (rms < r.noise * 1.6) r.noise = r.noise * 0.995 + rms * 0.005; else r.noise = r.noise * 0.9995 + rms * 0.0005;
       r.noise = Math.max(0.002, Math.min(r.noise, 0.12));
-      const speech = rms > Math.max(r.noise * 2.6, 0.006);
+      const speech = rms > Math.max(r.noise * 1.8, 0.0035);
       r.since = speech ? 0 : r.since + 1; r.frames++;
       REC.amp = Math.min(32767, rms * 32767 * 2.2);
-      const keep = !skip || r.since <= 90 || r.frames < 50;
+      const keep = !skip || r.since <= 200 || r.frames < 50;
       if (!keep) { r.pre.push(fr); if (r.pre.length > 15) { r.pre.shift(); REC.skipped += 20; } r.inSil = true; continue; }
       if (r.inSil) { for (const p of r.pre) encodeFrame(p); r.pre = []; r.inSil = false; }
       encodeFrame(fr);
@@ -353,6 +353,7 @@
       } catch (e) { call("onModels", { ok: false, msg: friendly(e) }); }
     },
     ask: (seg, scope, q, hist) => window.MemoraJobs.ask(seg, scope, q, hist),
+    gen: (id, prompt, txt, json) => window.MemoraJobs.gen(id, prompt, txt, json),
 
     // player
     playLoad: (path, title, sub, seek) => {

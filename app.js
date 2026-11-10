@@ -83,6 +83,9 @@
   db.subjects = db.subjects || [];
   db.sessions = db.sessions || [];
   db.tickets = db.tickets || [];
+  db.plans = db.plans || [];
+  db.memos = db.memos || [];
+  db.reports = db.reports || [];
   const save = () => { A.writeDb(JSON.stringify(db)); if (window.__memReady) scheduleReminders(); };
   save();
 
@@ -171,7 +174,7 @@
 
   // ------------------------------------------------------------------ router
   let view = "today", params = {}, hist = [];
-  const TOP = ["today", "library", "timetable", "settings", "meetings", "mlibrary", "tasks", "ask"];
+  const TOP = ["today", "library", "timetable", "settings", "meetings", "mlibrary", "tasks", "ask", "reports"];
   const segOf = () => (db.settings.segment === "meet" ? "meet" : "edu");
   const home = () => (segOf() === "meet" ? "meetings" : "today");
   const isMeet = (s) => !!s && s.segment === "meeting";
@@ -194,9 +197,9 @@
   function nav() {
     const meet = segOf() === "meet";
     const items = meet
-      ? [["meetings", "home", "Home"], ["mlibrary", "list", "Meetings"], ["ask", "chat", "Ask"], ["tasks", "task", "Tasks"], ["settings", "gear", "Settings"]]
+      ? [["meetings", "home", "Home"], ["mlibrary", "list", "Meetings"], ["tasks", "task", "Tasks"], ["ask", "chat", "Ask"], ["reports", "mail", "Reports"]]
       : [["today", "home", "Today"], ["library", "book", "Library"], ["ask", "chat", "Ask"], ["timetable", "cal", "Timetable"], ["settings", "gear", "Settings"]];
-    const active = view === "subject" || view === "pack" || view === "book" ? "library" : view === "session" ? (meet ? "mlibrary" : "library") : view === "brief" ? "meetings" : view;
+    const active = view === "subject" || view === "pack" || view === "book" ? "library" : view === "session" ? (meet ? "mlibrary" : "library") : view === "brief" || view === "clarity" ? "meetings" : view;
     $("#nav").innerHTML = items.map(([k, i, l]) => `<button class="nv ${active === k ? "on" : ""}" data-nav="${k}">${ic(i)}${l}</button>`).join("");
     $$("[data-nav]").forEach((b) => (b.onclick = () => go(b.dataset.nav)));
   }
@@ -306,17 +309,21 @@
   const fmtDue = (d) => { if (!d) return ""; const [y, m, dd] = d.split("-").map(Number); return `${pad(dd)} ${MON[m - 1]}`; };
   const isOverdue = (t) => t.status === "open" && t.due && t.due < todayISO();
 
-  // AI outputs → tickets (runs once per meeting)
+  // AI outputs → title, people, tickets, follow-ups, memos and the next meeting (runs once per meeting)
   function syncMeetings() {
     let changed = false;
     db.sessions.forEach((s) => {
       if (!isMeet(s) || s.synced || !A.exists(s.id, "summary.md")) return;
       const at = nowISO();
+      const meta = J(A.readText(s.id, "meta.json"), {}), mx = J(A.readText(s.id, "meeting.json"), {});
+      if (meta.title && !s.titleLocked) { if (!s.userTitle) s.userTitle = s.title; s.title = String(meta.title).slice(0, 90); }
+      if (!s.attendees && Array.isArray(mx.people)) s.attendees = mx.people.map((p) => p && p.name).filter((n) => n && !isMe(n) && !/^speaker\s*\d/i.test(n)).slice(0, 8).join(", ");
       J(A.readText(s.id, "actions.json"), []).forEach((a) => {
         if (!a || !a.task) return;
         db.tickets.push({
           id: "t" + uid(), text: String(a.task), owner: a.owner || "", due: /^\d{4}-\d{2}-\d{2}$/.test(a.due || "") ? a.due : "",
-          status: "open", meetingId: s.id, series: s.series || "", created: at, notes: "",
+          status: "open", meetingId: s.id, series: s.series || "", created: at, notes: a.why || "",
+          priority: ["high", "medium", "low"].includes(a.priority) ? a.priority : "medium", mine: !!a.mine || isMe(a.owner), manager: !!a.manager, at: a.at || "",
           history: [{ at, what: `Created from “${s.title}”`, meetingId: s.id }],
         });
       });
@@ -325,15 +332,27 @@
         t.history = t.history || [];
         t.history.push({ at, what: `Discussed in “${s.title}”${f.note ? ": " + f.note : ""}`, meetingId: s.id });
         t.followedIn = (t.followedIn || []).concat(s.id);
-        if (f.status === "done" && t.status !== "done") { t.status = "done"; t.doneAt = at; t.history.push({ at, what: `Closed in “${s.title}”`, meetingId: s.id }); }
+        if (f.status === "done" && t.status !== "done") { t.status = "done"; t.doneAt = at; t.pending = null; t.history.push({ at, what: `Closed in “${s.title}”`, meetingId: s.id }); }
+        else if (f.status === "pending") { t.pending = { reason: f.reason || f.note || "", followWith: f.followWith || (t.pending && t.pending.followWith) || "", since: (t.pending && t.pending.since) || at }; t.history.push({ at, what: `Pending: ${t.pending.reason || "no reason given"}${t.pending.followWith ? " · follow up with " + t.pending.followWith : ""}`, meetingId: s.id }); }
+        else if (f.status === "open" && t.pending) { t.pending = null; t.history.push({ at, what: "Moving again", meetingId: s.id }); }
       });
+      (mx.remember || []).forEach((r) => { if (r && r.text) db.memos.push({ id: "n" + uid(), text: String(r.text), date: /^\d{4}-\d{2}-\d{2}$/.test(r.date || "") ? r.date : "", meetingId: s.id, created: at, done: false }); });
+      const nm = mx.nextMeeting;
+      if (nm && /^\d{4}-\d{2}-\d{2}$/.test(nm.date || "") && !db.plans.some((p) => p.fromId === s.id)) {
+        const [y, mo, d] = nm.date.split("-").map(Number); const [hh, mm] = (/^\d{1,2}:\d{2}$/.test(nm.time || "") ? nm.time : "11:00").split(":").map(Number);
+        const when = new Date(y, mo - 1, d, hh, mm);
+        if (when.getTime() > Date.now()) db.plans.push({ id: "p" + uid(), at: when.toISOString(), title: s.series ? `${s.series} · next` : `Follow-up · ${s.title}`, series: s.series || "", fromId: s.id, mtype: s.mtype || "Official", attendees: nm.with || s.attendees || "", topics: (nm.topics || []).join("\n"), auto: true });
+      }
+      if (s.planId) db.plans = db.plans.filter((p) => p.id !== s.planId);
       s.synced = true; changed = true;
     });
-    if (changed) save();
+    if (changed) { save(); if (db.settings.apiKey && window.__memReady) setTimeout(() => makeClarity(true), 1500); }
   }
   function resetMeetingTickets(s) {
     if (!isMeet(s)) return;
     db.tickets = db.tickets.filter((t) => !(t.meetingId === s.id && (t.history || []).length <= 1 && t.status === "open"));
+    db.memos = db.memos.filter((m) => m.meetingId !== s.id);
+    db.plans = db.plans.filter((p) => !(p.fromId === s.id && p.auto));
     s.synced = false; save();
   }
 
@@ -353,10 +372,11 @@
     if (t.owner) bits.push(esc(t.owner));
     if (t.due) bits.push(`<span style="${isOverdue(t) ? "color:var(--rec);font-weight:700" : ""}">${isOverdue(t) ? "Overdue · " : "Due "}${fmtDue(t.due)}</span>`);
     if (t.status === "done" && t.doneAt) bits.push(`Done ${fmtDate(t.doneAt)}`);
+    if (isPending(t)) bits.push(`<span style="color:var(--warn)">Pending${t.pending.reason ? ": " + esc(t.pending.reason) : ""}${t.pending.followWith ? " · chase " + esc(t.pending.followWith) : ""}</span>`);
     if (showFrom && m) bits.push(esc(m.title));
     if ((t.followedIn || []).length) bits.push(`↻ ${t.followedIn.length}`);
     return `<div class="tk ${t.status}"><button class="tkc" data-tdone="${t.id}">${t.status === "done" ? ic("check") : ""}</button>
-      <button class="tkb" data-topen="${t.id}"><div class="t1">${esc(t.text)}</div>${bits.length ? `<div class="t2">${bits.join(" · ")}</div>` : ""}</button></div>`;
+      <button class="tkb" data-topen="${t.id}"><div class="t1">${t.priority === "high" && t.status !== "done" ? `<span class="chip rec tkc2">High</span>` : ""}${t.manager && t.status !== "done" ? `<span class="chip gold tkc2">Manager</span>` : ""}${esc(t.text)}</div>${bits.length ? `<div class="t2">${bits.join(" · ")}</div>` : ""}</button></div>`;
   }
   function bindTickets(root) {
     $$("[data-tdone]", root).forEach((b) => (b.onclick = () => toggleDone(b.dataset.tdone)));
@@ -367,7 +387,7 @@
     const at = nowISO();
     t.history = t.history || [];
     if (t.status === "done") { t.status = "open"; t.doneAt = null; t.history.push({ at, what: "Reopened" }); toast("Moved back to open"); }
-    else { t.status = "done"; t.doneAt = at; t.history.push({ at, what: "Marked done" }); toast("Done ✓ — moved to Done list"); }
+    else { t.status = "done"; t.doneAt = at; t.pending = null; t.history.push({ at, what: "Marked done" }); toast("Done ✓ — moved to Done list"); }
     save(); render();
   }
 
@@ -380,15 +400,38 @@
       <div class="field"><label>Task</label><textarea class="inp" id="tt" placeholder="What needs to be done?">${esc(d.text)}</textarea></div>
       <div class="row"><div class="field"><label>Owner</label><input class="inp" id="to" value="${esc(d.owner)}" placeholder="Name"></div>
       <div class="field"><label>Due date</label><input class="inp" id="tdue" type="date" value="${esc(d.due)}"></div></div>
+      <div class="row"><div class="field"><label>Status</label><select class="inp" id="tst">${[["open", "Open"], ["pending", "Pending / stuck"], ["done", "Done"]].map(([k, l]) => `<option value="${k}" ${(d.status === "done" ? "done" : d.pending ? "pending" : "open") === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      <div class="field"><label>Priority</label><select class="inp" id="tpr">${["high", "medium", "low"].map((k) => `<option value="${k}" ${(d.priority || "medium") === k ? "selected" : ""}>${k[0].toUpperCase() + k.slice(1)}</option>`).join("")}</select></div></div>
+      <div id="tpend" class="pendbox" style="${d.pending ? "" : "display:none"}">
+        <div class="field"><label>Why is it pending?</label><input class="inp" id="tpr2" value="${esc((d.pending && d.pending.reason) || "")}" placeholder="e.g. waiting for approval from finance"></div>
+        <div class="row"><div class="field"><label>Follow up with</label><input class="inp" id="tfw" value="${esc((d.pending && d.pending.followWith) || "")}" placeholder="Name"></div>
+        <div class="field"><label>Next follow-up</label><input class="inp" id="tnx" type="date" value="${esc((d.pending && d.pending.next) || "")}"></div></div></div>
+      <label class="chk"><input type="checkbox" id="tmg" ${d.manager ? "checked" : ""}> Align with my manager</label>
+      ${isNew ? "" : `<div class="field"><label>Add a status update</label><input class="inp" id="tup" placeholder="e.g. Called Ravi, he will confirm by Friday"></div>`}
+      ${m && d.at && tsMs(d.at) != null ? `<button class="btn line block small" style="margin-bottom:10px" data-hear>${ic("play")} Hear where it was said (${esc(d.at)})</button>` : ""}
       <div class="field"><label>Meeting series</label><select class="inp" id="tser"><option value="">None</option>${series.map((x) => `<option ${x === d.series ? "selected" : ""}>${esc(x)}</option>`).join("")}</select></div>
       <div class="field"><label>Notes</label><input class="inp" id="tn" value="${esc(d.notes || "")}" placeholder="Optional"></div>
       <button class="btn gold block" data-save>${isNew ? "Add task" : "Save changes"}</button>
       ${isNew ? "" : `<button class="btn line block" style="margin-top:8px" data-tshare>${ic("share")} Send to ${esc(d.owner || "owner")} (WhatsApp, SMS…)</button>`}
       ${isNew ? "" : `<div class="row" style="margin-top:8px"><button class="btn line" data-tog>${d.status === "done" ? "Reopen" : ic("check") + " Mark done"}</button><button class="btn danger" data-del>${ic("trash")} Delete</button></div>`}
       ${(d.history || []).length ? `<h2 class="sec" style="margin-top:22px">History</h2><div class="hist">${d.history.slice().reverse().map((h) => `<div class="hi"><i></i><div><b>${esc(h.what)}</b><span>${fmtDate(h.at)} · ${new Date(h.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span></div></div>`).join("")}</div>` : ""}`);
+    $("#tst", sh).onchange = (e) => { $("#tpend", sh).style.display = e.target.value === "pending" ? "" : "none"; };
+    const hr = $("[data-hear]", sh); if (hr) hr.onclick = () => { closeSheet(); playOriginal(m, Math.max(0, tsMs(d.at) - 3000)); };
     $("[data-save]", sh).onclick = () => {
       const text = $("#tt").value.trim();
       if (!text) { toast("Write the task first"); return; }
+      const at0 = nowISO(), ns = $("#tst").value;
+      d.history = d.history || [];
+      d.priority = $("#tpr").value; d.manager = $("#tmg").checked;
+      if (ns === "done" && d.status !== "done") { d.status = "done"; d.doneAt = at0; d.pending = null; if (!isNew) d.history.push({ at: at0, what: "Marked done" }); }
+      else if (ns !== "done" && d.status === "done") { d.status = "open"; d.doneAt = null; d.history.push({ at: at0, what: "Reopened" }); }
+      if (ns === "pending") {
+        const was = d.pending, reason = $("#tpr2").value.trim(), fw = $("#tfw").value.trim();
+        d.pending = { reason, followWith: fw, next: $("#tnx").value, since: (was && was.since) || at0 };
+        if (!was || was.reason !== reason || was.followWith !== fw) d.history.push({ at: at0, what: `Pending: ${reason || "no reason given"}${fw ? " · follow up with " + fw : ""}` });
+      } else if (ns === "open" && d.pending) { d.pending = null; d.history.push({ at: at0, what: "Back in progress" }); }
+      const up = $("#tup") ? $("#tup").value.trim() : "";
+      if (up) d.history.push({ at: at0, what: "Update: " + up });
       const changed = !isNew && (text !== d.text || $("#to").value.trim() !== d.owner || $("#tdue").value !== d.due);
       d.text = text; d.owner = $("#to").value.trim(); d.due = $("#tdue").value; d.series = $("#tser").value; d.notes = $("#tn").value.trim();
       d.history = d.history || [];
@@ -439,7 +482,7 @@
       $("[data-go]", sh).onclick = () => {
         const seriesName = st.newSeries ? ($("#mns").value.trim()) : st.series;
         const info = {
-          title: $("#mt").value.trim() || (seriesName ? `${seriesName} · #${meetings().filter((m) => m.series === seriesName).length + 1}` : `${st.mtype} meeting`),
+          title: $("#mt").value.trim() || (seriesName ? `${seriesName} · #${meetings().filter((m) => m.series === seriesName).length + 1}` : `${st.mtype} meeting`), titleAuto: !$("#mt").value.trim(),
           mtype: st.mtype, series: seriesName, attendees: $("#ma").value.trim(), agenda: $("#mag").value.trim(),
         };
         closeSheet();
@@ -473,47 +516,74 @@
   }
 
   // ---------- meetings home
+  let lineTab = "";
   VIEWS.meetings = () => {
     const r = rec();
     const ms = meetings();
-    const open = openTasks(), overdue = open.filter(isOverdue);
-    const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
-    const doneWeek = db.tickets.filter((t) => t.status === "done" && t.doneAt && t.doneAt > weekAgo).length;
-    const next = open.slice().sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999")).slice(0, 4);
+    const cs = clarityStats();
+    const next = openTasks().slice().sort((a, b) => (isOverdue(b) - isOverdue(a)) || (a.due || "9999").localeCompare(b.due || "9999")).slice(0, 4);
+    const np = nearPlan();
     let hero;
     if (r.state !== "idle" && r.sid) {
       const s = sess(r.sid);
       hero = `<div class="card now"><div class="eyebrow"><span class="recdot pulse" style="background:#fff;box-shadow:none"></span> ${r.state === "paused" ? "On break" : "Recording now"}</div>
         <h3>${esc(s ? s.title : "Recording")}</h3><div class="meta">${clock(r.elapsed)} recorded</div>
         <button class="btn gold block" data-resume>${ic("mic")} Return to recording</button></div>`;
+    } else if (np) {
+      hero = `<div class="card now"><div class="eyebrow"><span class="dot"></span>${new Date(np.at) > new Date() ? "Up next · " : "Now · "}${hm(np.at)}</div>
+        <h3>${esc(np.title)}</h3><div class="meta">${np.attendees ? esc(np.attendees) + " · " : ""}${planTasks(np).length} open items · ${topicsOf(np).length} topics</div>
+        <button class="btn gold block" data-quickm>${ic("mic")} Record this meeting</button>
+        <button class="btn small line block" style="margin-top:10px" data-brief="${np.id}">Open the brief</button></div>`;
     } else {
-      hero = `<div class="card now"><div class="eyebrow"><span class="dot"></span>Meetings</div>
-        <h3>Capture your next meeting</h3><div class="meta">Summary, minutes, tasks and the email draft — ready when it ends.</div>
-        <button class="btn gold block" data-newm>${ic("mic")} Start a meeting</button></div>`;
+      hero = `<div class="card now"><div class="eyebrow"><span class="dot"></span>One tap</div>
+        <h3>Press record. Memora does the rest.</h3><div class="meta">Title, people, minutes, tasks, follow-ups, reminders and the email — all from the recording.</div>
+        <button class="btn gold block" data-quickm>${ic("mic")} Record now</button>
+        <button class="btn small line block" style="margin-top:10px" data-newm>Add details first</button></div>`;
     }
-    return `<div class="top">${LOGO}<button class="iconbtn" data-import title="Import">${ic("upload")}</button></div>
+    const lu = lineup();
+    const tabs = [["today", "Today"], ["week", "This week"], ["next", "Next week"]].concat(lu.later.length ? [["later", "Later"]] : []);
+    const lt = lineTab || (lu.today.length ? "today" : lu.week.length ? "week" : lu.next.length ? "next" : "today");
+    const memos = (db.memos || []).filter((m) => !m.done && (!m.date || m.date <= new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10))).slice(-4).reverse();
+    const c = db.clarity && db.clarity.data;
+    return `<div class="top">${LOGO}<div style="display:flex;gap:6px"><button class="iconbtn" data-import title="Import">${ic("upload")}</button><button class="iconbtn" data-nav2="settings" title="Settings">${ic("gear")}</button></div></div>
       ${segSwitch("meet")}
       ${hero}
-      <div class="stats">
-        <button class="stat" data-go-tasks="open"><b>${open.length}</b><span>Open tasks</span></button>
-        <button class="stat ${overdue.length ? "warn" : ""}" data-go-tasks="open"><b>${overdue.length}</b><span>Overdue</span></button>
-        <button class="stat" data-go-tasks="done"><b>${doneWeek}</b><span>Done this week</span></button>
+      <button class="card clar" data-clarity><div class="eyebrow">${ic("spark")} My clarity ${clarBusy ? "· updating…" : ""}</div>
+        <div class="clh">${c ? esc(c.headline || "") : ms.length ? "Tap to see where your work stands and what to do next." : "Your clarity builds up as you record meetings."}</div>
+        ${c && (c.focus || []).length ? `<div class="clf">${ic("right")} ${esc(c.focus[0])}</div>` : ""}</button>
+      <div class="stats four">
+        <button class="stat" data-go-tasks="open"><b>${cs.open}</b><span>Open</span></button>
+        <button class="stat ${cs.pending ? "warn" : ""}" data-go-tasks="pending"><b>${cs.pending}</b><span>Pending</span></button>
+        <button class="stat ${cs.overdue ? "warn" : ""}" data-go-tasks="open"><b>${cs.overdue}</b><span>Overdue</span></button>
+        <button class="stat" data-go-tasks="done"><b>${cs.closedWeek}</b><span>Done</span></button>
       </div>
-      ${(db.plans || []).filter((p) => new Date(p.at).getTime() > Date.now() - 3600000).length ? `<h2 class="sec">Upcoming</h2><div class="list">${(db.plans || []).filter((p) => new Date(p.at).getTime() > Date.now() - 3600000).sort((a, b) => a.at.localeCompare(b.at)).map((p) => `<button class="item" data-brief="${p.id}"><div class="ic" style="color:var(--gold)">${ic("cal")}</div><div class="tx"><div class="t1">${esc(p.title)}</div><div class="t2">${fmtDay(p.at)}, ${fmtDate(p.at)} · ${new Date(p.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div></div><span class="chip gold">Brief</span></button>`).join("")}</div>` : ""}
-      ${next.length ? `<h2 class="sec">Follow up next <button data-go-tasks2="open">All tasks</button></h2><div class="tklist">${next.map((t) => ticketRow(t, true)).join("")}</div>` : ""}
+      <h2 class="sec">Lineup <button data-addplan>${ic("plus")} Add</button></h2>
+      <div class="langs" style="margin-top:0">${tabs.map(([k, l]) => `<button class="lang ${lt === k ? "on" : ""}" data-lt="${k}">${l}${lu[k].length ? " · " + lu[k].length : ""}</button>`).join("")}</div>
+      <div class="list" style="margin-top:8px">${lu[lt].map(planItem).join("") || `<div class="card empty" style="padding:16px">${lt === "today" ? "Nothing planned today." : "Nothing planned yet."} <button class="lnk" data-addplan>Add a meeting</button> — Memora reminds you with a brief before it starts.</div>`}</div>
+      ${memos.length ? `<h2 class="sec">Don't forget</h2><div class="card" style="padding:6px 14px">${memos.map((m) => `<div class="agi"><button class="chip gold" data-memo="${m.id}">${m.date ? fmtDue(m.date) : ic("check")}</button><div><b>${esc(m.text)}</b>${sess(m.meetingId) ? `<span>${esc(sess(m.meetingId).title)}</span>` : ""}</div></div>`).join("")}</div>` : ""}
+      ${next.length ? `<h2 class="sec">Follow up next <button data-go-tasks2="follow">By person</button></h2><div class="tklist">${next.map((t) => ticketRow(t, true)).join("")}</div>` : ""}
       <h2 class="sec">Recent meetings ${ms.length ? `<button data-nav2="mlibrary">See all</button>` : ""}</h2>
-      ${ms.length ? `<div class="list">${ms.slice(0, 5).map(meetingItem).join("")}</div>` : `<div class="card empty"><div class="big">No meetings yet</div>Start one when your next meeting begins, or import a recording.</div>`}
+      ${ms.length ? `<div class="list">${ms.slice(0, 4).map(meetingItem).join("")}</div>` : `<div class="card empty"><div class="big">No meetings yet</div>Tap Record now when your next meeting begins, or import a recording.</div>`}
       <button class="btn line block" style="margin-top:12px" data-import>${ic("upload")} Import a recording</button>`;
   };
   BIND.meetings = (app) => {
     bindSeg(app); bindOpen(app); bindTickets(app);
+    $$("[data-quickm]", app).forEach((b) => (b.onclick = () => quickMeeting()));
     $$("[data-newm]", app).forEach((b) => (b.onclick = () => meetingSetup()));
     $$("[data-brief]", app).forEach((b) => (b.onclick = () => go("brief", { id: b.dataset.brief })));
+    $$("[data-addplan]", app).forEach((b) => (b.onclick = () => lineupSheet(null)));
+    $$("[data-lt]", app).forEach((b) => (b.onclick = () => { lineTab = b.dataset.lt; render(); }));
+    $$("[data-memo]", app).forEach((b) => (b.onclick = () => memoDone(b.dataset.memo)));
+    $$("[data-clarity]", app).forEach((b) => (b.onclick = () => go("clarity")));
     $$("[data-resume]", app).forEach((b) => (b.onclick = () => go("record", { id: rec().sid })));
     $$("[data-import]", app).forEach((b) => (b.onclick = () => A.pickAudio()));
     $$("[data-nav2]", app).forEach((b) => (b.onclick = () => go(b.dataset.nav2)));
     $$("[data-go-tasks],[data-go-tasks2]", app).forEach((b) => (b.onclick = () => { taskTab = b.dataset.goTasks || b.dataset.goTasks2; go("tasks"); }));
   };
+  function memoDone(id) {
+    const m = (db.memos || []).find((x) => x.id === id); if (!m) return;
+    m.done = !m.done; save(); toast(m.done ? "Marked done" : "Back on your list"); render();
+  }
 
   // ---------- meetings library
   let mFilter = "", mQ = "";
@@ -535,27 +605,38 @@
   };
 
   // ---------- tasks
-  let taskTab = "open", tFilter = "", tOwner = "";
+  let taskTab = "open", tFilter = "", tOwner = "", tMgr = false;
   VIEWS.tasks = () => {
     const series = seriesList();
-    const owners = Array.from(new Set(db.tickets.filter((t) => t.status === taskTab).map((t) => t.owner).filter(Boolean))).sort();
-    const all = db.tickets.filter((t) => (!tFilter || (tFilter === "__none" ? !t.series : t.series === tFilter)) && (!tOwner || t.owner === tOwner));
-    const open = all.filter((t) => t.status === "open").sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999"));
-    const done = all.filter((t) => t.status === "done").sort((a, b) => (b.doneAt || "").localeCompare(a.doneAt || ""));
-    const list = taskTab === "open" ? open : done;
+    const base = db.tickets.filter((t) => (!tFilter || (tFilter === "__none" ? !t.series : t.series === tFilter)) && (!tMgr || t.manager));
+    const open = base.filter((t) => t.status === "open" && !t.pending), pend = base.filter(isPending), done = base.filter((t) => t.status === "done");
+    const own = (l) => l.filter((t) => !tOwner || t.owner === tOwner);
+    const byDue = (a, b) => (isOverdue(b) - isOverdue(a)) || ((b.priority === "high") - (a.priority === "high")) || (a.due || "9999").localeCompare(b.due || "9999");
+    const owners = Array.from(new Set((taskTab === "pending" ? pend : taskTab === "done" ? done : open).map((t) => t.owner).filter(Boolean))).sort();
+    let body;
+    if (taskTab === "follow") {
+      const g = followGroups().filter(([, l]) => l.some((t) => base.includes(t)));
+      body = g.map(([who, l]) => { l = l.filter((t) => base.includes(t)); return `<div class="card fg"><div class="fgh"><div class="av">${esc(who.charAt(0).toUpperCase())}</div><div class="tx"><b>${esc(who)}</b><span>${l.length} item${l.length > 1 ? "s" : ""}${l.filter(isOverdue).length ? " · " + l.filter(isOverdue).length + " overdue" : ""}${l.filter(isPending).length ? " · " + l.filter(isPending).length + " pending" : ""}</span></div>${who !== "Me" && who !== "Unassigned" ? `<button class="btn small line" data-fmsg="${esc(who)}">${ic("share")} Follow up</button>` : ""}</div>
+        <div class="tklist">${l.sort(byDue).map((t) => ticketRow(t, true)).join("")}</div></div>`; }).join("") || `<div class="empty">Nobody to chase — everything open is moving.</div>`;
+    } else {
+      const list = own(taskTab === "pending" ? pend : taskTab === "done" ? done : open).sort(taskTab === "done" ? (a, b) => (b.doneAt || "").localeCompare(a.doneAt || "") : byDue);
+      body = `<div class="tklist">${list.map((t) => ticketRow(t, true)).join("") || `<div class="empty">${taskTab === "open" ? "Nothing open. Tasks from your meetings appear here automatically — or add one with +." : taskTab === "pending" ? "Nothing stuck. Tasks that are blocked show here with the reason and who to chase." : "Completed tasks and their history appear here."}</div>`}</div>`;
+    }
     return `<div class="top"><div class="brand">Tasks</div><button class="iconbtn" data-addt>${ic("plus")}</button></div>
-      <div class="segs"><button class="seg ${taskTab === "open" ? "on" : ""}" data-tt="open">Open · ${open.length}</button><button class="seg ${taskTab === "done" ? "on" : ""}" data-tt="done">Done · ${done.length}</button></div>
-      ${series.length ? `<div class="langs" style="margin-top:-6px"><button class="lang ${!tFilter ? "on" : ""}" data-f="">All</button>${series.map((x) => `<button class="lang ${tFilter === x ? "on" : ""}" data-f="${esc(x)}">${esc(x)}</button>`).join("")}<button class="lang ${tFilter === "__none" ? "on" : ""}" data-f="__none">One-off</button></div>` : ""}
-      ${owners.length > 1 || tOwner ? `<div class="langs" style="margin-top:2px"><button class="lang ${!tOwner ? "on" : ""}" data-ow="">${ic("users")} Everyone</button>${owners.map((o) => `<button class="lang ${tOwner === o ? "on" : ""}" data-ow="${esc(o)}">${esc(o)}</button>`).join("")}</div>` : ""}
-      <div class="tklist" style="margin-top:10px">${list.map((t) => ticketRow(t, true)).join("") || `<div class="empty">${taskTab === "open" ? "Nothing open. Tasks from your meetings appear here — or add one with +." : "Completed tasks and their history appear here."}</div>`}</div>
-      ${taskTab === "open" && open.length ? `<p class="tip">Tap the circle to mark done. Open tasks are checked again in the next meeting of the same series.</p>` : ""}`;
+      <div class="segs four"><button class="seg ${taskTab === "open" ? "on" : ""}" data-tt="open">Open · ${open.length}</button><button class="seg ${taskTab === "pending" ? "on" : ""}" data-tt="pending">Pending · ${pend.length}</button><button class="seg ${taskTab === "follow" ? "on" : ""}" data-tt="follow">Follow up</button><button class="seg ${taskTab === "done" ? "on" : ""}" data-tt="done">Done · ${done.length}</button></div>
+      <div class="langs" style="margin-top:-6px"><button class="lang ${tMgr ? "on" : ""}" data-mgr>${ic("flag")} For manager</button>${series.length ? `<button class="lang ${!tFilter ? "on" : ""}" data-f="">All</button>${series.map((x) => `<button class="lang ${tFilter === x ? "on" : ""}" data-f="${esc(x)}">${esc(x)}</button>`).join("")}<button class="lang ${tFilter === "__none" ? "on" : ""}" data-f="__none">One-off</button>` : ""}</div>
+      ${taskTab !== "follow" && (owners.length > 1 || tOwner) ? `<div class="langs" style="margin-top:2px"><button class="lang ${!tOwner ? "on" : ""}" data-ow="">${ic("users")} Everyone</button>${owners.map((o) => `<button class="lang ${tOwner === o ? "on" : ""}" data-ow="${esc(o)}">${esc(o)}</button>`).join("")}</div>` : ""}
+      <div style="margin-top:10px">${body}</div>
+      ${taskTab === "open" && open.length ? `<p class="tip">Tap the circle to mark done. Tap a task to mark it pending with the reason — Memora checks it again in the next meeting with those people.</p>` : ""}`;
   };
   BIND.tasks = (app) => {
     bindTickets(app);
     $("[data-addt]", app).onclick = () => ticketSheet(null, { series: tFilter && tFilter !== "__none" ? tFilter : "" });
-    $$("[data-tt]", app).forEach((b) => (b.onclick = () => { taskTab = b.dataset.tt; render(); }));
+    $$("[data-tt]", app).forEach((b) => (b.onclick = () => { taskTab = b.dataset.tt; tOwner = ""; render(); }));
     $$("[data-f]", app).forEach((b) => (b.onclick = () => { tFilter = b.dataset.f; render(); }));
     $$("[data-ow]", app).forEach((b) => (b.onclick = () => { tOwner = b.dataset.ow; render(); }));
+    $$("[data-mgr]", app).forEach((b) => (b.onclick = () => { tMgr = !tMgr; render(); }));
+    $$("[data-fmsg]", app).forEach((b) => (b.onclick = () => { const g = followGroups().find(([w]) => w === b.dataset.fmsg); if (g) A.shareText(followMsg(g[0], g[1])); }));
   };
 
   // ---------- meeting detail
@@ -572,6 +653,8 @@
       const md = A.readText(s.id, "summary.md");
       const ag = agenda.length ? `<div class="card" style="margin-bottom:14px;padding:12px 14px"><div class="eyebrow" style="margin-bottom:8px">Agenda</div>${agenda.map((a) => `<div class="agi"><span class="chip ${a.status === "done" ? "ok" : a.status === "partial" ? "gold" : "err"}">${a.status === "done" ? "Done" : a.status === "partial" ? "Partly" : "Pending"}</span><div><b>${esc(a.item)}</b>${a.note ? `<span>${esc(a.note)}</span>` : ""}</div></div>`).join("")}</div>` : "";
       body = md ? ag + `<div class="md">${mdHtml(md)}</div>` : `<div class="empty"><div class="big">Summary appears here</div>Key points, decisions, risks and next steps.</div>`;
+    } else if (mTab === "insights") {
+      body = insightsBody(s);
     } else if (mTab === "mom") {
       const md = A.readText(s.id, "mom.md");
       body = md ? `<div class="md">${mdHtml(md)}</div><button class="btn line block" style="margin-top:14px" data-copymom>${ic("copy")} Copy minutes</button>` : `<div class="empty">Minutes of meeting appear after processing.</div>`;
@@ -594,7 +677,8 @@
     const openN = mine.filter((t) => t.status === "open").length;
     return `<button class="back" data-back>${ic("left")} Meetings</button>
       <div class="shead"><div class="eyebrow">${esc(s.mtype || "Official")} meeting${s.series ? " · " + esc(s.series) : ""}</div>
-      <h1>${esc(s.title)}</h1><div class="meta"><span>${esc(s.dateLabel || fmtDate(s.date))}</span>${s.durationMs ? `<span>${dur(s.durationMs)}</span>` : ""}${s.attendees ? `<span>${esc(s.attendees)}</span>` : ""}</div></div>
+      <h1>${esc(s.title)}</h1><div class="meta"><span>${esc(s.dateLabel || fmtDate(s.date))}</span>${s.durationMs ? `<span>${dur(s.durationMs)}</span>` : ""}${s.attendees ? `<span>${esc(s.attendees)}</span>` : ""}</div>
+      ${(() => { const tl = (J(A.readText(s.id, "meta.json"), {}).titles || []).filter((x) => x && x !== s.title); if (s.userTitle && s.userTitle !== s.title && !tl.includes(s.userTitle)) tl.push(s.userTitle); return tl.length && !s.titleLocked ? `<div class="tsugg"><span>${ic("spark")} Title from the recording · other ideas:</span>${tl.slice(0, 4).map((x) => `<button class="lang" data-ttl="${esc(x)}">${esc(x)}</button>`).join("")}<button class="lang" data-tkeep>${ic("check")} Keep</button></div>` : ""; })()}</div>
       <div id="stcard" style="margin-top:16px">${statusCard(s, st)}</div>
       <div class="actions">
         <button class="act hi" data-listen ${ready ? "" : "disabled"}>${ic("head")}${hasAudio ? "Listen" : "Voice"}</button>
@@ -604,6 +688,7 @@
       </div>
       <div class="tabs">
         <button class="tab ${mTab === "summary" ? "on" : ""}" data-mt="summary">Summary</button>
+        <button class="tab ${mTab === "insights" ? "on" : ""}" data-mt="insights">Insights</button>
         <button class="tab ${mTab === "mom" ? "on" : ""}" data-mt="mom">Minutes</button>
         <button class="tab ${mTab === "tasks" ? "on" : ""}" data-mt="tasks">Tasks${openN ? " " + openN : ""}</button>
         <button class="tab ${mTab === "email" ? "on" : ""}" data-mt="email">Email</button>
@@ -615,7 +700,12 @@
     $$("[data-back]", app).forEach((b) => (b.onclick = back));
     bindStatus(app, s); bindTickets(app);
     $$("[data-mt]", app).forEach((b) => (b.onclick = () => { mTab = b.dataset.mt; render(); }));
-    $$(".md [data-t]", app).forEach((b) => (b.onclick = () => playOriginal(s, Math.max(0, Number(b.dataset.t) - 3000))));
+    $$("#sbody [data-t]", app).forEach((b) => (b.onclick = () => playOriginal(s, Math.max(0, Number(b.dataset.t) - 3000))));
+    $$("[data-ttl]", app).forEach((b) => (b.onclick = () => { s.title = b.dataset.ttl; s.titleLocked = true; save(); toast("Title updated"); render(); }));
+    $$("[data-tkeep]", app).forEach((b) => (b.onclick = () => { s.titleLocked = true; save(); render(); }));
+    $$("#sbody [data-memo]", app).forEach((b) => (b.onclick = () => memoDone(b.dataset.memo)));
+    $$("#sbody [data-brief]", app).forEach((b) => (b.onclick = () => go("brief", { id: b.dataset.brief })));
+    $$("#sbody [data-addnext]", app).forEach((b) => (b.onclick = () => { const nm = J(A.readText(s.id, "meeting.json"), {}).nextMeeting || {}; let at; if (/^\d{4}-\d{2}-\d{2}$/.test(nm.date || "")) { const [y, mo, d] = nm.date.split("-").map(Number); const [hh, mm] = (/^\d{1,2}:\d{2}$/.test(nm.time || "") ? nm.time : "11:00").split(":").map(Number); at = new Date(y, mo - 1, d, hh, mm).toISOString(); } lineupSheet(null, Object.assign({ title: s.series ? `${s.series} · next` : `Follow-up · ${s.title}`, attendees: nm.with || s.attendees || "", topics: (nm.topics || []).join("\n"), series: s.series || "", fromId: s.id, mtype: s.mtype || "Official" }, at ? { at } : {})); }));
     const L = $("[data-listen]", app); if (L) L.onclick = () => { curLang = ""; listen(s); };
     const pdf = $("[data-pdf]", app); if (pdf) pdf.onclick = () => meetingPdf(s);
     const ml = $("[data-mail]", app); if (ml) ml.onclick = () => { mTab = "email"; render(); };
@@ -637,7 +727,7 @@
       ${hasOrig ? `<button class="opt" data-a="orig">${ic("play")}<div class="tx"><b>Play original recording</b><span>The full meeting audio</span></div></button>` : ""}
       ${hasOrig ? (A.exists(s.id, "clean_audio.m4a") ? `<button class="opt" data-a="cleanplay">${ic("spark")}<div class="tx"><b>Play clean recording</b><span>Noise, silences & side talk removed</span></div></button>` : `<button class="opt" data-a="clean">${ic("spark")}<div class="tx"><b>Make a clean recording</b><span>Removes noise, silences & side talk</span></div></button>`) : ""}
       <button class="opt" data-a="dl">${ic("down")}<div class="tx"><b>Download</b><span>Voice recap, recording, minutes, transcript</span></div></button>
-      <button class="opt" data-a="plan">${ic("cal")}<div class="tx"><b>Plan next meeting</b><span>Reminder 10 min before with a brief</span></div></button>
+      <button class="opt" data-a="plan">${ic("cal")}<div class="tx"><b>Add next meeting to lineup</b><span>Reminder 10 min before with a brief</span></div></button>
       <button class="opt" data-a="edit">${ic("edit")}<div class="tx"><b>Edit details</b><span>Title, type, series, attendees, agenda</span></div></button>
       ${hasOrig ? `<button class="opt" data-a="regen">${ic("refresh")}<div class="tx"><b>Re-create outputs</b><span>Run the AI again (uses the latest agenda & attendees)</span></div></button>` : ""}
       <button class="opt red" data-a="del">${ic("trash")}<div class="tx"><b>Delete meeting</b><span>Removes recording and outputs (tasks stay)</span></div></button>`);
@@ -646,7 +736,7 @@
       if (a === "orig") playOriginal(s, 0);
       else if (a === "dl") downloadSheet(s);
       else if (a === "edit") editMeeting(s);
-      else if (a === "plan") planSheet(s);
+      else if (a === "plan") { const d = new Date(Date.now() + 7 * 86400000); d.setHours(new Date(s.date).getHours(), new Date(s.date).getMinutes(), 0, 0); lineupSheet(null, { at: d.toISOString(), title: s.series ? `${s.series} · next` : `Follow-up · ${s.title}`, attendees: s.attendees || "", series: s.series || "", fromId: s.id, mtype: s.mtype || "Official", topics: J(A.readText(s.id, "agenda.json"), []).filter((x) => x.status !== "done").map((x) => x.item).join("\n") }); }
       else if (a === "clean") { A.process(s.id, "experience", "clean", "", false); toast("Cleaning… you can leave this screen"); setTimeout(render, 300); }
       else if (a === "cleanplay") A.playLoad(`${A.sessionPath(s.id)}/clean_audio.m4a`, s.title, "Clean recording", 0);
       else if (a === "regen") confirmSheet("Re-create the outputs?", "Summary, minutes, tasks and email will be made again. Tasks you edited or closed are kept.", "Re-create", false, () => { resetMeetingTickets(s); A.process(s.id, "summary", "", "", true); setTimeout(render, 300); });
@@ -665,6 +755,7 @@
       <div class="field"><label>Agenda</label><textarea class="inp" id="eag">${esc(s.agenda || "")}</textarea></div>
       <button class="btn gold block" data-ok>Save</button>`);
     $("[data-ok]", sh).onclick = () => {
+      if ($("#et").value.trim() && $("#et").value.trim() !== s.title) s.titleLocked = true;
       s.title = $("#et").value.trim() || s.title; s.mtype = $("#ety").value; s.series = $("#ese").value.trim();
       s.attendees = $("#eat").value.trim(); s.agenda = $("#eag").value.trim();
       db.tickets.forEach((t) => { if (t.meetingId === s.id) t.series = s.series; });
@@ -674,7 +765,7 @@
   function meetingPdf(s) {
     const mom = A.readText(s.id, "mom.md"), sum = A.readText(s.id, "summary.md");
     const tk = db.tickets.filter((t) => t.meetingId === s.id);
-    const extra = tk.length ? `\n\n## Task tracker (current status)\n\n| Task | Owner | Due | Status |\n|---|---|---|---|\n${tk.map((t) => `| ${t.text.replace(/\|/g, "/")} | ${t.owner || "—"} | ${t.due ? fmtDue(t.due) : "—"} | ${t.status === "done" ? "Done" : "Open"} |`).join("\n")}` : "";
+    const extra = tk.length ? `\n\n## Task tracker (current status)\n\n| Task | Owner | Due | Status |\n|---|---|---|---|\n${tk.map((t) => `| ${t.text.replace(/\|/g, "/")} | ${t.owner || "—"} | ${t.due ? fmtDue(t.due) : "—"} | ${t.status === "done" ? "Done" : t.pending ? "Pending" + (t.pending.reason ? " — " + t.pending.reason.replace(/\|/g, "/") : "") : "Open"} |`).join("\n")}` : "";
     makePdf(s, "", (mom || "") + "\n\n---\n\n" + (sum || "") + extra, "MEETING MINUTES");
   }
 
@@ -795,7 +886,7 @@
     hist = [[home(), {}]];
   }
   function maybeProcess(s) {
-    if (db.settings.autoProcess && db.settings.apiKey) A.process(s.id, "summary", "", "", false);
+    if ((db.settings.autoProcess || isMeet(s)) && db.settings.apiKey) A.process(s.id, "summary", "", "", false);
   }
 
   window.onRecovered = (sid, ms) => {
@@ -1589,7 +1680,7 @@
     const scopes = meet ? seriesList().map((x) => [x, x]) : db.subjects.map((x) => [x.id, x.name]);
     const sc = askScope[askKey()];
     const sugg = meet
-      ? ["What are my pending tasks and who owns them?", "What did we decide about pricing?", "Summarise last week's meetings", "What did Priya commit to?"]
+      ? ["What is pending, why, and whom should I follow up?", "What should I raise in my next meeting?", "What did I promise this week?", "Summarise this month for my manager"]
       : ["Explain the main topics from my last class", "What did sir say is important for the exam?", "Any assignments or deadlines?", "Quiz me on this week's classes"];
     return `<div class="top"><div class="brand">Ask Memora</div>${th.length ? `<button class="iconbtn" data-clear title="Clear">${ic("trash")}</button>` : ""}</div>
       <div class="askhint">${ic(meet ? "users" : "book")} Searching only your <b>${meet ? "meetings" : "classes"}</b>${meet ? "" : ""}</div>
@@ -1727,34 +1818,375 @@
     if (!last) return [];
     return J(A.readText(last.id, "agenda.json"), []).filter((a) => a.status !== "done").map((a) => a.item);
   }
+  let briefBusy = "";
   VIEWS.brief = () => {
     const p = (db.plans || []).find((x) => x.id === params.id);
     if (!p) return `<button class="back" data-back>${ic("left")} Back</button><div class="empty">This plan was removed.</div>`;
-    const tasks = p.series ? openTasks(p.series) : db.tickets.filter((t) => t.status === "open" && t.meetingId === p.fromId);
+    const tasks = planTasks(p);
     const pend = pendingAgendaOf(p.series, p.fromId);
+    const tp = topicsOf(p);
     const last = p.series ? meetings().filter((m) => m.series === p.series)[0] : sess(p.fromId);
-    const d = new Date(p.at);
+    const ns = namesOf(p.attendees).map(firstName);
+    const withThem = meetings().filter((m) => m !== last && ns.length && namesOf(m.attendees).some((n) => ns.includes(firstName(n)))).slice(0, 3);
+    const mem = (db.memos || []).filter((m) => !m.done && ((last && m.meetingId === last.id) || withThem.some((w) => w.id === m.meetingId)));
     return `<button class="back" data-back>${ic("left")} Back</button>
       <div class="shead"><div class="eyebrow">Meeting brief${p.series ? " · " + esc(p.series) : ""}</div><h1>${esc(p.title)}</h1>
-      <div class="meta"><span>${fmtDay(p.at)}, ${fmtDate(p.at)} · ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span></div></div>
+      <div class="meta"><span>${fmtDay(p.at)}, ${fmtDate(p.at)} · ${hm(p.at)}</span>${p.attendees ? `<span>${esc(p.attendees)}</span>` : ""}</div></div>
       <button class="btn gold block" style="margin-top:16px" data-startp>${ic("mic")} Start this meeting</button>
-      <h2 class="sec">Open follow-ups · ${tasks.length}</h2><div class="tklist">${tasks.map((t) => ticketRow(t, true)).join("") || `<div class="empty">Nothing open — clean slate.</div>`}</div>
-      ${pend.length ? `<h2 class="sec">Pending agenda</h2><div class="card" style="padding:6px 14px">${pend.map((x) => `<div class="agi"><span class="chip err">Pending</span><div><b>${esc(x)}</b></div></div>`).join("")}</div>` : ""}
+      <div class="row" style="margin-top:8px"><button class="btn line" data-editp>${ic("edit")} Edit</button><button class="btn line" data-preread>${ic("share")} Send pre-read</button></div>
+      ${tp.length || pend.length ? `<h2 class="sec">To discuss</h2><div class="card" style="padding:6px 14px">${tp.map((x) => `<div class="agi"><span class="chip gold">Topic</span><div><b>${esc(x)}</b></div></div>`).join("")}${pend.filter((x) => !tp.includes(x)).map((x) => `<div class="agi"><span class="chip err">Pending</span><div><b>${esc(x)}</b><span>Not finished last time</span></div></div>`).join("")}</div>` : ""}
+      <h2 class="sec">Open with them · ${tasks.length}</h2><div class="tklist">${tasks.map((t) => ticketRow(t, true)).join("") || `<div class="empty">Nothing open — clean slate.</div>`}</div>
+      ${mem.length ? `<h2 class="sec">Remember</h2><div class="card" style="padding:6px 14px">${mem.map((m) => `<div class="agi"><span class="chip gold">${ic("star")}</span><div><b>${esc(m.text)}</b></div></div>`).join("")}</div>` : ""}
+      <h2 class="sec">Talking points</h2>
+      ${p.brief ? `<div class="card md">${mdHtml(p.brief)}</div>` : `<div class="card" style="color:var(--muted)">Memora reads your past meetings with these people and prepares what to say, what to ask and what to push for.</div>`}
+      <button class="btn line block" style="margin-top:8px" data-tpts ${briefBusy ? "disabled" : ""}>${ic("spark")} ${briefBusy === p.id ? "Preparing…" : p.brief ? "Prepare again" : "Prepare talking points"}</button>
       ${last ? `<h2 class="sec">Last meeting</h2>${meetingItem(last)}` : ""}
-      <button class="btn danger block" style="margin-top:18px" data-delp>${ic("trash")} Remove this plan</button>`;
+      ${withThem.length ? `<h2 class="sec">Earlier with them</h2><div class="list">${withThem.map(meetingItem).join("")}</div>` : ""}
+      <button class="btn danger block" style="margin-top:18px" data-delp>${ic("trash")} Remove from lineup</button>`;
   };
   BIND.brief = (app) => {
     $("[data-back]", app).onclick = back;
     bindOpen(app); bindTickets(app);
     const p = (db.plans || []).find((x) => x.id === params.id); if (!p) return;
-    $("[data-startp]", app).onclick = () => {
-      const tasks = p.series ? openTasks(p.series) : [];
-      const agenda = pendingAgendaOf(p.series, p.fromId).concat(tasks.length ? ["Review open follow-ups (" + tasks.length + ")"] : []).join("\n");
-      db.plans = db.plans.filter((x) => x.id !== p.id); save();
-      startMeeting({ title: p.title, mtype: p.mtype, series: p.series, attendees: p.attendees, agenda });
-    };
+    $("[data-startp]", app).onclick = () => startFromPlan(p);
+    $("[data-editp]", app).onclick = () => lineupSheet(p);
+    $("[data-preread]", app).onclick = () => A.shareText(preRead(p));
     $("[data-delp]", app).onclick = () => { db.plans = db.plans.filter((x) => x.id !== p.id); save(); back(); };
+    $("[data-tpts]", app).onclick = () => {
+      if (briefBusy) return;
+      const ns = namesOf(p.attendees).map(firstName);
+      const rel = meetings().filter((m) => (p.series && m.series === p.series) || m.id === p.fromId || (ns.length && namesOf(m.attendees).some((n) => ns.includes(firstName(n))))).slice(0, 6);
+      const ctx = [`UPCOMING MEETING: ${p.title} | ${fmtDay(p.at)} ${fmtDate(p.at)} ${hm(p.at)} | with: ${p.attendees || "-"}`, `TOPICS I WANT TO COVER:\n${topicsOf(p).map((x) => "- " + x).join("\n") || "- (none given)"}`,
+        `OPEN ITEMS WITH THEM:\n${planTasks(p).map((t) => `- ${t.text} | owner: ${t.owner || "-"} | due: ${t.due || "-"}${t.pending ? " | pending: " + (t.pending.reason || "") : ""}`).join("\n") || "- none"}`,
+        ...rel.map((m) => `=== PAST MEETING ${fmtDate(m.date)} | ${m.title} | with: ${m.attendees || "-"} ===\n${A.readText(m.id, "summary.md")}`)].join("\n\n");
+      const prompt = `Prepare me for this meeting. I am ${db.settings.name || "the user"}. Use ONLY the data below from my earlier recorded meetings and tasks.
+Write short Markdown with these sections: '## Goal for this meeting' (one line), '## Say' (3-5 points to raise, most important first), '## Ask' (questions to ask, including status of open items), '## Push for' (decisions or commitments to get), '## Watch out' (risks, sensitivities, past promises). Be specific with names, numbers and dates. Max 180 words.`;
+      briefBusy = p.id; render();
+      aiGen(prompt, ctx, false).then((md) => { p.brief = md; save(); }).catch((e) => toast(e.message)).then(() => { briefBusy = ""; if (view === "brief") render(); });
+    };
   };
+
+  // ================================================================== MEETINGS PRO — AI helper, lineup, clarity, reports
+  const GEN = {}; let genN = 0;
+  function aiGen(prompt, text, json) {
+    return new Promise((res, rej) => {
+      if (!db.settings.apiKey) { rej(new Error("Add your free Gemini AI key in Settings first.")); return; }
+      const id = "g" + (++genN) + uid(); GEN[id] = { res, rej };
+      try { A.gen(id, prompt, text, !!json); } catch (e) { delete GEN[id]; rej(e); }
+    });
+  }
+  window.onGen = (id, r) => { const g = GEN[id]; if (!g) return; delete GEN[id]; if (r && r.ok) g.res(r.text || ""); else g.rej(new Error((r && r.msg) || "Something went wrong")); };
+  const parseJ = (raw) => { try { return JSON.parse(String(raw).slice(String(raw).indexOf("{"), String(raw).lastIndexOf("}") + 1)); } catch (e) { return null; } };
+  const tsMs = (t) => { if (!t) return null; const p = String(t).replace(/[\[\]\s]/g, "").split(":").map(Number); if (!p.length || p.some(isNaN)) return null; return (p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + (p[1] || 0)) * 1000; };
+  const tsBtn = (t) => { const ms = tsMs(t); return ms == null ? "" : `<button class="ts" data-t="${ms}">${esc(String(t).replace(/[\[\]]/g, ""))}</button>`; };
+  const hm = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const firstName = (n) => String(n || "").trim().toLowerCase().split(/\s+/)[0] || "";
+  const isMe = (n) => { const me = firstName(db.settings.name); const x = firstName(n); return !!x && (x === "me" || x === "myself" || x === "i" || (!!me && x === me)); };
+  const namesOf = (str) => String(str || "").split(/,|;|\/|&|\band\b/i).map((x) => x.trim()).filter((x) => x.length > 1 && !isMe(x));
+  const isPending = (t) => t.status === "open" && !!t.pending;
+  const isMineT = (t) => !!t.mine || (t.owner ? isMe(t.owner) : false);
+  const chaseWho = (t) => (t.pending && t.pending.followWith) || (!isMineT(t) ? t.owner : "") || "";
+  const uniq = (a) => Array.from(new Set(a.map((x) => String(x).trim()).filter(Boolean)));
+  function weekStart(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
+  const plain = (md) => String(md || "").replace(/^#+.*$/gm, "").replace(/[*_`>|#-]/g, " ").replace(/\[\d{1,2}:\d{2}(:\d{2})?\]/g, "").replace(/\s+/g, " ").trim();
+
+  // ---------- lineup (planned meetings)
+  function nearPlan() {
+    const now = Date.now();
+    return (db.plans || []).filter((p) => { const t = new Date(p.at).getTime(); return t > now - 60 * 60000 && t < now + 45 * 60000; })
+      .sort((a, b) => Math.abs(new Date(a.at) - now) - Math.abs(new Date(b.at) - now))[0] || null;
+  }
+  function planTasks(p) {
+    const ns = namesOf(p.attendees).map(firstName);
+    const hit = (x) => !!x && ns.some((n) => firstName(x) === n);
+    return db.tickets.filter((t) => t.status === "open" && ((p.series && t.series === p.series) || (p.fromId && t.meetingId === p.fromId) || hit(t.owner) || hit(t.pending && t.pending.followWith)));
+  }
+  const topicsOf = (p) => String(p.topics || "").split("\n").map((x) => x.replace(/^[-•\d.\s]+/, "").trim()).filter(Boolean);
+  function lineup() {
+    const now = new Date(); const t1 = new Date(now); t1.setHours(24, 0, 0, 0);
+    const w1 = weekStart(now); w1.setDate(w1.getDate() + 7); const w2 = new Date(w1); w2.setDate(w2.getDate() + 7);
+    const d0 = new Date(now); d0.setHours(0, 0, 0, 0);
+    const b = { today: [], week: [], next: [], later: [] };
+    (db.plans || []).slice().sort((a, c) => a.at.localeCompare(c.at)).forEach((p) => {
+      const t = new Date(p.at);
+      if (t < d0) return;
+      if (t < t1) b.today.push(p); else if (t < w1) b.week.push(p); else if (t < w2) b.next.push(p); else b.later.push(p);
+    });
+    return b;
+  }
+  function planItem(p) {
+    const n = planTasks(p).length, tp = topicsOf(p).length;
+    const past = new Date(p.at).getTime() < Date.now() - 15 * 60000;
+    return `<button class="item" data-brief="${p.id}"><div class="ic lt"><b>${esc(hm(p.at).replace(/\s?[AP]M/i, ""))}</b><span>${new Date(p.at).getHours() < 12 ? "AM" : "PM"}</span></div>
+      <div class="tx"><div class="t1">${esc(p.title)}</div><div class="t2">${fmtDay(p.at)}, ${fmtDate(p.at)}${p.attendees ? " · " + esc(p.attendees) : ""}</div></div>
+      ${past ? `<span class="chip">Missed?</span>` : n ? `<span class="chip err">${n} open</span>` : tp ? `<span class="chip gold">${tp} topics</span>` : `<span class="chip gold">Brief</span>`}</button>`;
+  }
+  function lineupSheet(p, defaults) {
+    const isNew = !p;
+    const d0 = new Date(Date.now() + 86400000); d0.setHours(11, 0, 0, 0);
+    const d = p || Object.assign({ id: "p" + uid(), at: d0.toISOString(), title: "", attendees: "", topics: "", series: "", mtype: "Official" }, defaults || {});
+    const loc = (iso) => { const x = new Date(iso); return `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}T${pad(x.getHours())}:${pad(x.getMinutes())}`; };
+    const series = seriesList();
+    const sh = sheet(`<h3>${isNew ? "Add to lineup" : "Edit meeting plan"}</h3><p class="sub">Memora reminds you 10 minutes before with a brief of everything open with these people.</p>
+      <div class="field"><label>Meeting</label><input class="inp" id="lt" placeholder="e.g. JBP review with operator" value="${esc(d.title)}"></div>
+      <div class="field"><label>When</label><input class="inp" type="datetime-local" id="lat" value="${loc(d.at)}"></div>
+      <div class="field"><label>Who you are meeting</label><input class="inp" id="lw" placeholder="Names, comma separated" value="${esc(d.attendees || "")}"></div>
+      <div class="field"><label>Topics to discuss</label><textarea class="inp" id="ltp" placeholder="One per line">${esc(d.topics || "")}</textarea></div>
+      <div class="row"><div class="field"><label>Series (optional)</label><input class="inp" id="lse" list="lserl" value="${esc(d.series || "")}" placeholder="One-off"><datalist id="lserl">${series.map((x) => `<option value="${esc(x)}">`).join("")}</datalist></div>
+      <div class="field"><label>Type</label><select class="inp" id="lty">${["Official", "Personal"].map((x) => `<option ${x === d.mtype ? "selected" : ""}>${x}</option>`).join("")}</select></div></div>
+      <button class="btn gold block" data-ok>${isNew ? "Add to lineup" : "Save"}</button>
+      ${isNew ? "" : `<button class="btn danger block" style="margin-top:8px" data-del>${ic("trash")} Remove</button>`}`);
+    $("[data-ok]", sh).onclick = () => {
+      const at = new Date($("#lat").value);
+      if (isNaN(at)) { toast("Pick a date and time"); return; }
+      d.title = $("#lt").value.trim() || ($("#lw").value.trim() ? "Meeting with " + $("#lw").value.trim() : "Meeting");
+      d.at = at.toISOString(); d.attendees = $("#lw").value.trim(); d.topics = $("#ltp").value.trim(); d.series = $("#lse").value.trim(); d.mtype = $("#lty").value;
+      db.plans = db.plans || [];
+      if (isNew) db.plans.push(d);
+      save(); closeSheet(); toast(isNew ? "Added · reminder set" : "Saved"); render();
+    };
+    const dl = $("[data-del]", sh); if (dl) dl.onclick = () => { db.plans = db.plans.filter((x) => x.id !== d.id); save(); closeSheet(); if (view === "brief") back(); else render(); };
+  }
+  function startFromPlan(p) {
+    const tasks = planTasks(p);
+    const agenda = uniq(topicsOf(p).concat(pendingAgendaOf(p.series, p.fromId)).concat(tasks.length ? ["Review open follow-ups (" + tasks.length + ")"] : []));
+    db.plans = db.plans.filter((x) => x.id !== p.id); save();
+    startMeeting({ title: p.title, mtype: p.mtype || "Official", series: p.series || "", attendees: p.attendees || "", agenda: agenda.join("\n"), planId: p.id, plannedAt: p.at });
+  }
+  function quickMeeting() {
+    const p = nearPlan();
+    if (p) { startFromPlan(p); return; }
+    startMeeting({ title: `Meeting · ${hm(nowISO())}`, titleAuto: true, mtype: "Official", series: "", attendees: "", agenda: "" });
+  }
+  function preRead(p) {
+    const tasks = planTasks(p), tp = topicsOf(p).concat(pendingAgendaOf(p.series, p.fromId));
+    const lines = [`Hi${p.attendees ? " " + namesOf(p.attendees).join(", ") : " all"},`, "", `Ahead of our meeting “${p.title}” on ${fmtDay(p.at)}, ${fmtDate(p.at)} at ${hm(p.at)}:`];
+    if (tp.length) { lines.push("", "Agenda:"); uniq(tp).forEach((x, i) => lines.push(`${i + 1}. ${x}`)); }
+    if (tasks.length) { lines.push("", "Open items — please bring an update:"); tasks.forEach((t) => lines.push(`- ${t.text}${t.owner ? " (" + t.owner + ")" : ""}${t.due ? " · due " + fmtDue(t.due) : ""}${t.pending ? " · pending: " + (t.pending.reason || "") : ""}`)); }
+    lines.push("", "Thanks,", db.settings.name || "");
+    return lines.join("\n");
+  }
+
+  // ---------- activity data (for reports, clarity, briefs)
+  function activity(from, to) {
+    const inR = (iso) => !!iso && new Date(iso) >= from && new Date(iso) < to;
+    const ms = meetings().filter((m) => inR(m.date)).slice().reverse();
+    const out = [];
+    let mins = 0;
+    ms.forEach((m) => {
+      mins += Math.round((m.durationMs || 0) / 60000);
+      const sum = A.readText(m.id, "summary.md") || "";
+      const one = ((/##\s*In one line\s*\n+([^\n]+)/i.exec(sum) || [])[1] || plain(sum).slice(0, 280)).trim();
+      const mx = J(A.readText(m.id, "meeting.json"), {});
+      const dec = (mx.decisions || []).map((x) => (x && x.text) || x).filter(Boolean).slice(0, 6);
+      out.push(`MEETING | ${fmtDay(m.date)} ${fmtDate(m.date)} | ${m.title} | with: ${m.attendees || "-"} | ${dur(m.durationMs || 0)}\n  Outcome: ${one || "-"}\n  Decisions: ${dec.join("; ") || "-"}\n  Insight: ${(mx.insights && mx.insights.clarity) || "-"}`);
+    });
+    const tl = (t) => `- ${t.text} | owner: ${t.owner || "-"} | due: ${t.due || "-"}${t.pending ? ` | pending: ${t.pending.reason || "-"} | chasing: ${t.pending.followWith || "-"}` : ""}${t.manager ? " | needs manager" : ""}${t.priority === "high" ? " | HIGH" : ""}`;
+    const created = db.tickets.filter((t) => inR(t.created)), closed = db.tickets.filter((t) => t.status === "done" && inR(t.doneAt));
+    const open = db.tickets.filter((t) => t.status === "open" && !t.pending), pend = db.tickets.filter(isPending), over = db.tickets.filter(isOverdue), mgr = db.tickets.filter((t) => t.manager && t.status === "open");
+    const nextP = (db.plans || []).filter((p) => new Date(p.at) >= to && new Date(p.at) < new Date(to.getTime() + 7 * 86400000));
+    const memos = (db.memos || []).filter((x) => !x.done);
+    const text = [
+      `PERIOD: ${fmtDate(from.toISOString())} to ${fmtDate(new Date(to.getTime() - 1).toISOString())}`,
+      `NUMBERS: ${ms.length} meetings, ${Math.round(mins / 6) / 10} hours in meetings, ${created.length} tasks created, ${closed.length} closed, ${open.length} open, ${pend.length} pending, ${over.length} overdue`,
+      "", "MEETINGS:", out.join("\n") || "- none",
+      "", "TASKS CLOSED IN PERIOD:", closed.map(tl).join("\n") || "- none",
+      "", "TASKS CREATED IN PERIOD:", created.map(tl).join("\n") || "- none",
+      "", "STILL OPEN:", open.slice(0, 60).map(tl).join("\n") || "- none",
+      "", "PENDING / BLOCKED:", pend.map(tl).join("\n") || "- none",
+      "", "OVERDUE:", over.map(tl).join("\n") || "- none",
+      "", "NEEDS MANAGER ALIGNMENT:", mgr.map(tl).join("\n") || "- none",
+      "", "UPCOMING MEETINGS (next 7 days):", nextP.map((p) => `- ${fmtDay(p.at)} ${fmtDate(p.at)} ${hm(p.at)} | ${p.title} | with: ${p.attendees || "-"} | topics: ${topicsOf(p).join("; ") || "-"}`).join("\n") || "- none",
+      "", "THINGS TO REMEMBER:", memos.map((x) => `- ${x.text}${x.date ? " (" + x.date + ")" : ""}`).join("\n") || "- none",
+    ].join("\n");
+    return { text, n: { meetings: ms.length, mins, created: created.length, closed: closed.length, open: open.length, pending: pend.length, overdue: over.length, manager: mgr.length } };
+  }
+
+  // ---------- clarity
+  let clarBusy = false, clarErr = "";
+  function clarityStats() {
+    const now = new Date(), w0 = weekStart(now);
+    const wk = meetings().filter((m) => new Date(m.date) >= w0);
+    const d30 = new Date(Date.now() - 30 * 86400000).toISOString();
+    const recent = db.tickets.filter((t) => (t.created || "") >= d30);
+    const done30 = recent.filter((t) => t.status === "done").length;
+    const waiting = {};
+    db.tickets.filter((t) => t.status === "open").forEach((t) => { const w = chaseWho(t); if (w) waiting[w] = (waiting[w] || 0) + 1; });
+    return {
+      meetings: wk.length, mins: wk.reduce((a, m) => a + Math.round((m.durationMs || 0) / 60000), 0),
+      closedWeek: db.tickets.filter((t) => t.status === "done" && t.doneAt && new Date(t.doneAt) >= w0).length,
+      rate: recent.length ? Math.round((done30 / recent.length) * 100) : null,
+      open: db.tickets.filter((t) => t.status === "open" && !t.pending).length, pending: db.tickets.filter(isPending).length,
+      overdue: db.tickets.filter(isOverdue).length, manager: db.tickets.filter((t) => t.manager && t.status === "open").length,
+      waiting: Object.entries(waiting).sort((a, b) => b[1] - a[1]).slice(0, 5),
+    };
+  }
+  function makeClarity(silent) {
+    if (clarBusy) return;
+    if (!db.settings.apiKey) { if (!silent) toast("Add your Gemini key in Settings first"); return; }
+    if (!meetings().length && !db.tickets.length) { if (!silent) toast("Record a meeting first"); return; }
+    clarBusy = true; clarErr = ""; if (view === "clarity" || view === "meetings") render();
+    const act = activity(new Date(Date.now() - 14 * 86400000), new Date(Date.now() + 60000));
+    const prompt = `You are my chief of staff. Today is ${fmtDay(nowISO())}, ${fmtDate(nowISO())}. I am ${db.settings.name || "the user"}.
+Using ONLY my meeting and task data below (from my recordings), give me a clear line of sight on my work: where it stands, what to do next, and the direction to take. Be specific (names, dates, numbers), practical and brief. No generic advice.
+Return ONLY JSON: {"headline": one sentence on where my work stands right now, "focus": [the 3 most important things to do next, each one line with the reason], "openLoops": [items at risk of being forgotten or slipping], "followUps": [{"person": name, "about": what to chase them for}], "risks": [short bullets], "direction": [2 to 4 lines of guidance on direction and approach, based on patterns across my meetings], "pattern": one honest observation about my working pattern with one practical suggestion}`;
+    aiGen(prompt, act.text, true).then((raw) => {
+      const d = parseJ(raw); if (!d) throw new Error("Could not read the AI answer. Try again.");
+      db.clarity = { at: nowISO(), data: d }; save();
+    }).catch((e) => { clarErr = e.message; if (!silent) toast(e.message); })
+      .then(() => { clarBusy = false; if (view === "clarity" || view === "meetings") render(); });
+  }
+  const clarityFresh = () => db.clarity && Date.now() - new Date(db.clarity.at).getTime() < 12 * 3600000;
+  VIEWS.clarity = () => {
+    const s = clarityStats(), c = (db.clarity && db.clarity.data) || null;
+    const li = (a) => (a || []).map((x) => `<li>${esc(typeof x === "string" ? x : JSON.stringify(x))}</li>`).join("");
+    return `<button class="back" data-back>${ic("left")} Home</button>
+      <div class="shead"><div class="eyebrow">${ic("spark")} My clarity</div><h1>${c ? esc(c.headline || "Where your work stands") : "Where your work stands"}</h1>
+      <div class="meta"><span>${db.clarity ? "Updated " + fmtDate(db.clarity.at) + " · " + hm(db.clarity.at) : "Built from your recordings and tasks"}</span></div></div>
+      <div class="stats four" style="margin-top:14px">
+        <div class="stat"><b>${s.meetings}</b><span>Meetings this week</span></div>
+        <div class="stat"><b>${Math.round(s.mins / 6) / 10}h</b><span>In meetings</span></div>
+        <div class="stat"><b>${s.closedWeek}</b><span>Closed this week</span></div>
+        <div class="stat"><b>${s.rate == null ? "—" : s.rate + "%"}</b><span>Done rate · 30 days</span></div>
+      </div>
+      <div class="stats four">
+        <button class="stat" data-tk="open"><b>${s.open}</b><span>Open</span></button>
+        <button class="stat ${s.pending ? "warn" : ""}" data-tk="pending"><b>${s.pending}</b><span>Pending</span></button>
+        <button class="stat ${s.overdue ? "warn" : ""}" data-tk="open"><b>${s.overdue}</b><span>Overdue</span></button>
+        <button class="stat" data-tk="follow"><b>${s.manager}</b><span>For manager</span></button>
+      </div>
+      ${clarBusy ? `<div class="card status" style="margin-top:12px">${ic("spark")}<div><b>Reading all your meetings and tasks…</b><span>About 20 seconds</span></div></div>` : ""}
+      ${clarErr && !clarBusy ? `<div class="card" style="margin-top:12px;color:var(--rec)">${esc(clarErr)}</div>` : ""}
+      ${c ? `
+        <h2 class="sec">Focus next</h2><div class="card"><ol class="ol">${li(c.focus)}</ol></div>
+        ${(c.followUps || []).length ? `<h2 class="sec">Follow up with</h2><div class="card">${c.followUps.map((f) => `<div class="agi"><span class="chip gold">${esc(f.person || "")}</span><div><b>${esc(f.about || "")}</b></div></div>`).join("")}</div>` : ""}
+        ${(c.openLoops || []).length ? `<h2 class="sec">Open loops</h2><div class="card"><ul class="ol">${li(c.openLoops)}</ul></div>` : ""}
+        ${(c.direction || []).length ? `<h2 class="sec">Direction</h2><div class="card"><ul class="ol">${li(c.direction)}</ul></div>` : ""}
+        ${(c.risks || []).length ? `<h2 class="sec">Risks</h2><div class="card"><ul class="ol">${li(c.risks)}</ul></div>` : ""}
+        ${c.pattern ? `<h2 class="sec">Your working pattern</h2><div class="card insq">${esc(c.pattern)}</div>` : ""}` : ""}
+      ${s.waiting.length ? `<h2 class="sec">Waiting on people</h2><div class="card">${s.waiting.map(([n, k]) => `<div class="agi"><span class="chip">${k}</span><div><b>${esc(n)}</b></div></div>`).join("")}</div>` : ""}
+      <button class="btn ${c ? "line" : "gold"} block" style="margin-top:16px" data-clar ${clarBusy ? "disabled" : ""}>${ic("refresh")} ${c ? "Update clarity" : "Build my clarity"}</button>`;
+  };
+  BIND.clarity = (app) => {
+    $("[data-back]", app).onclick = back;
+    $("[data-clar]", app).onclick = () => makeClarity(false);
+    $$("[data-tk]", app).forEach((b) => (b.onclick = () => { taskTab = b.dataset.tk; go("tasks"); }));
+    if (!clarityFresh() && !clarBusy && !clarErr && db.settings.apiKey && meetings().some((m) => A.exists(m.id, "summary.md"))) makeClarity(true);
+  };
+
+  // ---------- reports (weekly manager update + 4-week monthly)
+  let repBusy = "", repErr = "", repOpen = "";
+  function repRange(kind) {
+    const now = new Date();
+    if (kind === "week") { const from = weekStart(now); const to = new Date(now.getTime() + 60000); return { from, to, label: `${fmtDate(from.toISOString())} – ${fmtDate(now.toISOString())}` }; }
+    const to = new Date(now.getTime() + 60000); const from = weekStart(now); from.setDate(from.getDate() - 21);
+    return { from, to, label: `4 weeks · ${fmtDate(from.toISOString())} – ${fmtDate(now.toISOString())}` };
+  }
+  function makeReport(kind) {
+    if (repBusy) return;
+    if (!db.settings.apiKey) { toast("Add your Gemini key in Settings first"); return; }
+    const r = repRange(kind), me = db.settings.name || "", mgr = db.settings.managerName || "";
+    let data;
+    if (kind === "week") data = activity(r.from, r.to).text;
+    else {
+      const weeks = [];
+      for (let i = 0; i < 4; i++) {
+        const a = new Date(r.from); a.setDate(a.getDate() + i * 7); const b = new Date(a); b.setDate(b.getDate() + 7);
+        const act = activity(a, b < r.to ? b : r.to);
+        weeks.push(`===== WEEK ${i + 1} (${fmtDate(a.toISOString())} – ${fmtDate(new Date(Math.min(b, r.to) - 1).toISOString())}) =====\n${act.text}`);
+      }
+      const prev = (db.reports || []).filter((x) => x.kind === "week" && new Date(x.at) >= r.from).map((x) => `--- weekly update sent ${fmtDate(x.at)} ---\n${x.body}`).join("\n\n");
+      data = weeks.join("\n\n") + (prev ? "\n\n===== WEEKLY UPDATES ALREADY WRITTEN =====\n" + prev : "");
+    }
+    const common = `I am ${me || "the sender"}${mgr ? `; my manager is ${mgr}` : ""}. Use ONLY the activity data below (my meetings, tasks and follow-ups, captured by Memora from my recordings). Never invent numbers, clients or results; if a section has nothing, write "None this period".
+Style: crisp, professional and confident; plain-text email with simple "-" bullets (no markdown, no bold); specific names, numbers and dates; a busy manager must understand it in 60 seconds.`;
+    const prompt = kind === "week"
+      ? `Write my WEEKLY update email to my manager for ${r.label}.\n${common}\nBody structure:\n1. Greeting and a one-line headline of the week\n2. Key meetings & outcomes (one line each: with whom, what was decided)\n3. Completed this week\n4. In progress (owner, due date)\n5. Pending / blockers: why each is pending and who I am following up with\n6. Need your support / alignment\n7. Plan for next week (upcoming meetings and priorities)\n8. Sign-off with my name\nReturn ONLY JSON: {"subject": "...", "body": "...", "highlights": [3 to 5 one-line highlights]}`
+      : `Write my MONTHLY report email to my manager covering the last 4 weeks (${r.label}), built week by week.\n${common}\nBody structure:\n1. Greeting and a one-line headline of the month\n2. Numbers at a glance (meetings, hours in meetings, tasks created vs closed, completion %)\n3. Week by week: Week 1 to Week 4, 2–4 lines each with the main meetings, outcomes and closures\n4. Top achievements of the month\n5. People / accounts engaged most and where each relationship stands\n6. Pending items and risks, with reasons and owners\n7. Support / alignment I need\n8. Focus for next month\n9. Sign-off with my name\nReturn ONLY JSON: {"subject": "...", "body": "...", "highlights": [3 to 5 one-line highlights]}`;
+    repBusy = kind; repErr = ""; render();
+    aiGen(prompt, data, true).then((raw) => {
+      const d = parseJ(raw); if (!d || !d.body) throw new Error("Could not read the AI answer. Try again.");
+      db.reports = db.reports || [];
+      const rep = { id: "r" + uid(), kind, at: nowISO(), from: r.from.toISOString(), to: r.to.toISOString(), label: r.label, subject: d.subject || (kind === "week" ? "Weekly update" : "Monthly report"), body: d.body, highlights: d.highlights || [] };
+      db.reports.push(rep); while (db.reports.length > 60) db.reports.shift();
+      repOpen = rep.id; save(); toast(kind === "week" ? "Weekly update ready" : "Monthly report ready");
+    }).catch((e) => { repErr = e.message; }).then(() => { repBusy = ""; if (view === "reports") render(); });
+  }
+  VIEWS.reports = () => {
+    const st = db.settings, reps = (db.reports || []).slice().sort((a, b) => b.at.localeCompare(a.at));
+    const cur = reps.find((x) => x.id === repOpen) || reps[0] || null;
+    const card = (kind, title, sub) => {
+      const r = repRange(kind), a = activity(r.from, r.to).n, busy = repBusy === kind;
+      return `<div class="card rcard"><div class="eyebrow">${ic(kind === "week" ? "cal" : "list")} ${title}</div>
+        <div class="meta" style="margin:6px 0 10px">${esc(r.label)}</div>
+        <div class="mini"><span><b>${a.meetings}</b> meetings</span><span><b>${a.closed}</b> closed</span><span><b>${a.pending}</b> pending</span><span><b>${a.manager}</b> for manager</span></div>
+        <p class="sub" style="margin:8px 0 12px">${sub}</p>
+        <button class="btn ${busy ? "line" : "gold"} block" data-rep="${kind}" ${repBusy ? "disabled" : ""}>${busy ? "Writing from all your meetings…" : ic("spark") + " Create " + (kind === "week" ? "weekly update" : "monthly report")}</button></div>`;
+    };
+    return `<div class="top"><div class="brand">Reports</div></div>
+      <div class="card" style="padding:12px 14px"><div class="row"><div class="field" style="margin:0"><label>Manager name</label><input class="inp" id="mgn" value="${esc(st.managerName || "")}" placeholder="Optional"></div>
+      <div class="field" style="margin:0"><label>Manager email</label><input class="inp" id="mge" value="${esc(st.managerEmail || "")}" placeholder="Optional"></div></div></div>
+      ${card("week", "Weekly update", "Everything you did this week — meetings, outcomes, closed and pending tasks, blockers and support needed — as a mail draft for your manager.")}
+      ${card("month", "Monthly report", "The last 4 weeks combined, week by week, with numbers, achievements, risks and next month's focus.")}
+      ${repErr ? `<div class="card" style="margin-top:10px;color:var(--rec)">${esc(repErr)}</div>` : ""}
+      ${cur ? `<h2 class="sec">${cur.kind === "week" ? "Weekly update" : "Monthly report"} · ${esc(cur.label || fmtDate(cur.at))}</h2>
+        ${(cur.highlights || []).length ? `<div class="card insq" style="margin-bottom:10px"><ul class="ol">${cur.highlights.map((h) => `<li>${esc(h)}</li>`).join("")}</ul></div>` : ""}
+        <div class="field"><label>To</label><input class="inp" id="rto" value="${esc(cur.to_ || st.managerEmail || "")}" placeholder="manager@company.com"></div>
+        <div class="field"><label>Subject</label><input class="inp" id="rsub" value="${esc(cur.subject)}"></div>
+        <div class="field"><label>Message</label><textarea class="inp" id="rbody" style="height:380px;line-height:1.55">${esc(cur.body)}</textarea></div>
+        <div class="row"><button class="btn line" data-rcopy>${ic("copy")} Copy</button><button class="btn line" data-rshare>${ic("share")} Share</button></div>
+        <button class="btn gold block" style="margin-top:8px" data-rsend>${ic("mail")} Open in email app</button>
+        <p class="tip">Edits are saved automatically.</p>` : `<div class="card empty" style="margin-top:14px"><div class="big">No reports yet</div>Record your meetings — Memora turns them into your weekly and monthly manager updates.</div>`}
+      ${reps.length > 1 ? `<h2 class="sec">Earlier reports</h2><div class="list">${reps.filter((x) => !cur || x.id !== cur.id).slice(0, 12).map((x) => `<button class="item" data-ropen="${x.id}"><div class="ic" style="color:var(--gold)">${ic(x.kind === "week" ? "cal" : "list")}</div><div class="tx"><div class="t1">${esc(x.subject)}</div><div class="t2">${x.kind === "week" ? "Weekly" : "Monthly"} · ${fmtDate(x.at)}</div></div></button>`).join("")}</div>` : ""}`;
+  };
+  BIND.reports = (app) => {
+    const st = db.settings;
+    $("#mgn", app).onchange = (e) => { st.managerName = e.target.value.trim(); save(); };
+    $("#mge", app).onchange = (e) => { st.managerEmail = e.target.value.trim(); save(); };
+    $$("[data-rep]", app).forEach((b) => (b.onclick = () => makeReport(b.dataset.rep)));
+    $$("[data-ropen]", app).forEach((b) => (b.onclick = () => { repOpen = b.dataset.ropen; render(); window.scrollTo(0, 0); }));
+    const reps = (db.reports || []).slice().sort((a, b) => b.at.localeCompare(a.at));
+    const cur = reps.find((x) => x.id === repOpen) || reps[0];
+    if (!cur) return;
+    const keep = () => { cur.subject = $("#rsub").value; cur.body = $("#rbody").value; cur.to_ = $("#rto").value.trim(); save(); };
+    ["#rto", "#rsub", "#rbody"].forEach((k) => ($(k, app).onchange = keep));
+    $("[data-rcopy]", app).onclick = () => { keep(); A.copyText(`Subject: ${cur.subject}\n\n${cur.body}`); toast("Copied"); };
+    $("[data-rshare]", app).onclick = () => { keep(); A.shareText(`${cur.subject}\n\n${cur.body}`); };
+    $("[data-rsend]", app).onclick = () => { keep(); A.composeEmail(cur.to_ || "", cur.subject, cur.body); };
+  };
+
+  // ---------- meeting insights tab
+  function insightsBody(s) {
+    const mx = J(A.readText(s.id, "meeting.json"), {}), ins = mx.insights || {};
+    if (!Object.keys(mx).length) return `<div class="empty"><div class="big">Insights appear here</div>People, decisions, direction, risks and what to remember — from the recording.</div>`;
+    const li = (a) => (a || []).map((x) => `<li>${esc(typeof x === "string" ? x : x.text || "")}</li>`).join("");
+    const memos = (db.memos || []).filter((m) => m.meetingId === s.id);
+    const nm = mx.nextMeeting || {};
+    const planned = (db.plans || []).find((p) => p.fromId === s.id);
+    return `${ins.clarity ? `<div class="card insq"><div class="eyebrow" style="margin-bottom:6px">${ic("spark")} Clarity</div>${esc(ins.clarity)}</div>` : ""}
+      ${(ins.direction || []).length ? `<h2 class="sec">Direction</h2><div class="card"><ul class="ol">${li(ins.direction)}</ul></div>` : ""}
+      <div class="pgrid">${(ins.risks || []).length ? `<div class="card"><div class="eyebrow" style="color:var(--rec)">Risks</div><ul class="ol">${li(ins.risks)}</ul></div>` : ""}
+      ${(ins.opportunities || []).length ? `<div class="card"><div class="eyebrow" style="color:var(--ok)">Opportunities</div><ul class="ol">${li(ins.opportunities)}</ul></div>` : ""}</div>
+      ${(mx.people || []).length ? `<h2 class="sec">People</h2><div class="card">${mx.people.filter((p) => p && !isMe(p.name)).map((p) => `<div class="person"><div class="av">${esc((p.name || "?").charAt(0).toUpperCase())}</div><div><b>${esc(p.name || "")}${p.role ? `<span class="rl"> · ${esc(p.role)}</span>` : ""}</b>${p.points ? `<span>${esc(p.points)}</span>` : ""}${p.commitments ? `<span class="cm">Promised: ${esc(p.commitments)}</span>` : ""}</div></div>`).join("")}</div>` : ""}
+      ${(mx.decisions || []).length ? `<h2 class="sec">Decisions</h2><div class="card">${mx.decisions.map((d) => `<div class="agi"><span class="chip ok">${ic("check")}</span><div><b>${esc(d.text || d)}</b> ${tsBtn(d.at)}</div></div>`).join("")}</div>` : ""}
+      ${memos.length ? `<h2 class="sec">Remember</h2><div class="card">${memos.map((m) => `<div class="agi"><button class="chip ${m.done ? "ok" : "gold"}" data-memo="${m.id}">${m.done ? "Done" : m.date ? fmtDue(m.date) : "Note"}</button><div><b>${esc(m.text)}</b></div></div>`).join("")}</div>` : ""}
+      ${nm.date || (nm.topics || []).length ? `<h2 class="sec">Next meeting</h2><div class="card"><div class="agi"><span class="chip gold">${nm.date ? fmtDue(nm.date) + (nm.time ? " · " + nm.time : "") : "Date not fixed"}</span><div><b>${esc(nm.with || s.attendees || "")}</b>${(nm.topics || []).length ? `<span>${esc(nm.topics.join(" · "))}</span>` : ""}</div></div>
+        ${planned ? `<button class="btn line block small" style="margin-top:8px" data-brief="${planned.id}">${ic("cal")} In your lineup · open brief</button>` : `<button class="btn line block small" style="margin-top:8px" data-addnext>${ic("plus")} Add to lineup</button>`}</div>` : ""}
+      ${ins.myShare != null || ins.tone ? `<div class="mini" style="margin-top:14px">${ins.myShare != null ? `<span>You spoke <b>~${esc(ins.myShare)}%</b></span>` : ""}${ins.tone ? `<span>Tone <b>${esc(ins.tone)}</b></span>` : ""}</div>` : ""}`;
+  }
+
+  // ---------- follow-up area (tasks grouped by person to chase)
+  function followGroups() {
+    const g = {};
+    db.tickets.filter((t) => t.status === "open").forEach((t) => {
+      const w = chaseWho(t) || (isMineT(t) ? "Me" : "Unassigned");
+      (g[w] = g[w] || []).push(t);
+    });
+    return Object.entries(g).sort((a, b) => (a[0] === "Me") - (b[0] === "Me") || b[1].length - a[1].length);
+  }
+  function followMsg(person, list) {
+    return [`Hi ${person},`, "", "Quick follow-up on these:", ...list.map((t) => `- ${t.text}${t.due ? " (due " + fmtDue(t.due) + ")" : ""}${t.pending && t.pending.reason ? " — " + t.pending.reason : ""}`), "", "Could you share the latest status? Thanks!", db.settings.name || ""].join("\n");
+  }
 
   // ================================================================== REMINDERS
   let remT;
@@ -1779,6 +2211,23 @@
           if (at > now) out.push({ id: `t_${t.id}`, at, title: `Due today: ${t.text.slice(0, 60)}`, text: `${t.owner ? "Owner: " + t.owner + " · " : ""}Tap to update the task`, action: `task:${t.id}` });
         });
       }
+      if (st.remTask !== false) {
+        (db.memos || []).filter((m) => !m.done && m.date).forEach((m) => {
+          const [y, mo, dd] = m.date.split("-").map(Number);
+          const at = new Date(y, mo - 1, dd, 9, 30).getTime();
+          if (at > now) out.push({ id: `n_${m.id}`, at, title: `Remember: ${m.text.slice(0, 70)}`, text: "From your meeting · tap to open", action: `memo:${m.id}` });
+        });
+        db.tickets.filter((t) => isPending(t) && t.pending.next).forEach((t) => {
+          const [y, mo, dd] = t.pending.next.split("-").map(Number);
+          const at = new Date(y, mo - 1, dd, 10, 0).getTime();
+          if (at > now) out.push({ id: `f_${t.id}`, at, title: `Follow up${t.pending.followWith ? " with " + t.pending.followWith : ""}`, text: t.text.slice(0, 90), action: `task:${t.id}` });
+        });
+      }
+      if (st.remReport !== false && db.sessions.some(isMeet)) {
+        const f = new Date(); f.setDate(f.getDate() + ((5 - f.getDay() + 7) % 7)); f.setHours(17, 0, 0, 0);
+        if (f.getTime() <= now) f.setDate(f.getDate() + 7);
+        out.push({ id: "rep_week", at: f.getTime(), title: "Your weekly update is ready to write", text: "Tap — Memora drafts your manager mail from this week's meetings", action: "report:week" });
+      }
       if (st.remMeet !== false) {
         (db.plans || []).forEach((p) => {
           const at = new Date(p.at).getTime() - 10 * 60000;
@@ -1795,7 +2244,7 @@
   window.onAction = (a) => {
     if (!a) return;
     const start = () => {
-      if (segOf() === "meet") { go("meetings"); meetingSetup(); return; }
+      if (segOf() === "meet") { go("meetings"); quickMeeting(); return; }
       const det = detectClass();
       if (det && det.kind === "now") startClass(det.s.id);
       else { go("today"); pickSubject((id) => startClass(id), "Start a class", "Which subject is this class for?"); }
@@ -1808,6 +2257,8 @@
     else if (a.startsWith("class:")) { db.settings.segment = "edu"; save(); startClass(a.slice(6)); }
     else if (a.startsWith("task:")) { db.settings.segment = "meet"; save(); go("tasks"); const t = db.tickets.find((x) => x.id === a.slice(5)); if (t) ticketSheet(t); }
     else if (a.startsWith("brief:")) { db.settings.segment = "meet"; save(); go("brief", { id: a.slice(6) }); }
+    else if (a.startsWith("report:")) { db.settings.segment = "meet"; save(); go("reports"); makeReport(a.slice(7) || "week"); }
+    else if (a.startsWith("memo:")) { db.settings.segment = "meet"; save(); go("meetings"); }
   };
 
   // ================================================================== BACKUP
