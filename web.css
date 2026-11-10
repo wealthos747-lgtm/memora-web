@@ -1,0 +1,18 @@
+/* Memora Web — laptop layout on top of the phone design */
+body { background: radial-gradient(1200px 500px at 50% -200px, rgba(79,70,229,.10), transparent), var(--bg); }
+.webbar { position: sticky; top: 0; z-index: 35; background: #1C1B22; color: #E9E7F5; font-size: 11.5px; font-weight: 600; text-align: center; padding: 6px 12px; letter-spacing: .01em; }
+#app { max-width: 760px; padding-top: 22px; }
+.nav { left: 50%; right: auto; transform: translateX(-50%); width: min(760px, 100%); bottom: 14px; border-radius: 18px; border: 1px solid var(--line2); box-shadow: 0 16px 40px -16px rgba(28,27,34,.3); }
+.player { bottom: 92px; max-width: 740px; }
+body.nonav .player { bottom: 14px; }
+.askbar { bottom: 92px; max-width: 740px; }
+body.askv .player { bottom: 150px; }
+.sheet { max-width: 620px; left: 50%; right: auto; transform: translateX(-50%); width: 100%; border-radius: 22px 22px 0 0; animation: none; }
+.toast { bottom: 100px; }
+.recpill { top: 38px; }
+button, .item, .act, .lang, .tab { cursor: pointer; }
+.item:hover, .act:hover, .opt:hover, .sugg:hover { filter: brightness(.985); }
+@media (min-width: 900px) {
+  .actions { grid-template-columns: repeat(4, 1fr); }
+  .md { font-size: 15px; }
+}
