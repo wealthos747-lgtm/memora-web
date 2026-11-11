@@ -402,6 +402,22 @@
       } catch (e) { call("onImported", sid, { ok: false, msg: "Could not import: " + e.message }); }
     },
     takePhoto: (sid) => window.Android.pickPhoto(sid),
+    pickMaterials: (sid) => {
+      const i = document.createElement("input"); i.type = "file"; i.multiple = true; i.accept = "image/*,.pdf,.pptx,.ppt,application/pdf"; i.style.display = "none";
+      i.onchange = async () => {
+        const out = []; let k = 0;
+        for (const f of Array.from(i.files || [])) {
+          const ln = f.name.toLowerCase(), ext = ln.endsWith(".pdf") ? "pdf" : ln.endsWith(".pptx") ? "pptx" : ln.endsWith(".ppt") ? "ppt" : ln.endsWith(".png") ? "png" : "jpg";
+          const file = `materials/m_${Date.now()}_${k++}.${ext}`;
+          await setBlob(K(sid, file), f);
+          out.push({ file, name: f.name, kind: ext === "jpg" || ext === "png" ? "image" : ext });
+        }
+        i.remove(); if (out.length) call("onMaterials", sid, out);
+      };
+      document.body.appendChild(i); i.click();
+    },
+    deleteMaterial: (sid, rel) => { remove(K(sid, rel)); },
+    genWith: (id, prompt, txt, json, sid, files) => window.MemoraJobs.genWith(id, prompt, txt, json, sid, files),
     pickPhoto: async (sid) => { const f = await pickFile("image/*"); if (!f) return; const n = "p_" + Date.now() + ".jpg"; await setBlob(K(sid, "photos/" + n), f); call("onPhoto", sid, n); },
     deletePhoto: (sid, n) => remove(K(sid, "photos/" + n)),
     openUrl: (u) => window.open(u, "_blank", "noopener"),

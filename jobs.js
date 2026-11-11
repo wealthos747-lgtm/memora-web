@@ -273,15 +273,17 @@
       if (!this.has("transcript.md") && this.key) { made = true; this.phase(0.02, 0.3, "Preparing the full transcript"); const parts = await this.buildParts(); await this.uploadAll(parts); await this.transcribe(parts); }
       const tr = this.f("transcript.md"); const meeting = this.isMeeting();
       this.lo = made ? 0.3 : 0.03; this.hi = 1;
+      const matN = this.f("materials.md");
+      const trm = matN ? tr + "\n\n=== STUDENT'S OWN NOTES AND THE PROFESSOR'S SLIDES FOR THIS CLASS (also cover these points; anything not said in class is marked as from the notes/slides) ===\n\n" + matN : tr;
       const tasks = []; const errors = [];
       const task = (k, label, fn) => { this.step(k, 0, label + "…"); tasks.push(fn().then(() => this.step(k, 1, label + " ✓")).catch((e) => { errors.push(label + ": " + friendly(e)); this.step(k, 1, label + " ✗"); })); };
       if (!meeting && (all || what === "book")) {
         if (what === "book") { await remove(K(this.sid, "classbook.md")); await remove(K(this.sid, "qabank.md")); }
-        if (!this.has("classbook.md")) task("book", "Class Book", async () => this.w("classbook.md", await this.gen(this.model, [textPart(Prompts.classBook(this.ctxBlock(), this.bookmarksBlock(), lang)), textPart("FULL TRANSCRIPT:\n\n" + tr)], 0.4)));
+        if (!this.has("classbook.md")) task("book", "Class Book", async () => this.w("classbook.md", await this.gen(this.model, [textPart(Prompts.classBook(this.ctxBlock(), this.bookmarksBlock(), lang)), textPart("FULL TRANSCRIPT:\n\n" + trm)], 0.4)));
       }
       if (!meeting && (all || what === "book" || what === "qa")) {
         if (what === "qa") await remove(K(this.sid, "qabank.md"));
-        if (!this.has("qabank.md")) task("qa", "Q&A Bank", async () => this.w("qabank.md", await this.gen("gemini-2.5-flash", [textPart(Prompts.qaBank(this.ctxBlock(), lang)), textPart("FULL TRANSCRIPT:\n\n" + tr)], 0.4)));
+        if (!this.has("qabank.md")) task("qa", "Q&A Bank", async () => this.w("qabank.md", await this.gen("gemini-2.5-flash", [textPart(Prompts.qaBank(this.ctxBlock(), lang)), textPart("FULL TRANSCRIPT:\n\n" + trm)], 0.4)));
       }
       if (!meeting && (all || what === "replay")) {
         if (what === "replay") { await remove(K(this.sid, "replay_script.txt")); await remove(K(this.sid, "replay_audio.m4a")); }
@@ -492,8 +494,46 @@
       call("onGen", id, { ok: true, text: out });
     } catch (e) { call("onGen", id, { ok: false, msg: friendly(e) }); }
   }
+  async function shrink(blob, max) {
+    try {
+      const bmp = await createImageBitmap(blob); const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+      const c = document.createElement("canvas"); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+      return await new Promise((r) => c.toBlob((b) => r(b || blob), "image/jpeg", 0.85));
+    } catch (e) { return blob; }
+  }
+  async function pptxText(blob) {
+    const z = await JSZip.loadAsync(blob); const out = [];
+    const names = Object.keys(z.files).filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a, b) => parseInt(a.match(/\d+/)[0]) - parseInt(b.match(/\d+/)[0]));
+    for (const n of names) {
+      const xml = await z.file(n).async("string"); const no = n.match(/(\d+)\.xml/)[1];
+      const txt = xml.replace(/<\/a:p>/g, "\n").replace(/<a:t>([^<]*)<\/a:t>|<[^>]+>/g, (m, t) => t || "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/\n{2,}/g, "\n").trim();
+      const nf = z.file(`ppt/notesSlides/notesSlide${no}.xml`);
+      const notes = nf ? (await nf.async("string")).replace(/<\/a:p>/g, "\n").replace(/<a:t>([^<]*)<\/a:t>|<[^>]+>/g, (m, t) => t || "").trim() : "";
+      if (txt || notes) out.push(`--- Slide ${no} ---\n${txt}${notes ? "\n  Speaker notes: " + notes : ""}`);
+    }
+    return out.join("\n") || "(no text found on the slides)";
+  }
+  async function genWith(id, prompt, txt, json, sid, filesJson) {
+    try {
+      const st = settings(); const key = (st.apiKey || "").trim();
+      if (!key) throw new Error("Add your free Gemini AI key in Settings first.");
+      const parts = [textPart(prompt)];
+      for (const it of JSON.parse(filesJson || "[]")) {
+        const b = getBlob(sid, it.file); if (!b) continue;
+        const label = it.label || it.file, ln = it.file.toLowerCase();
+        if (ln.endsWith(".pptx")) parts.push(textPart(label + " (slide text):\n" + await pptxText(b)));
+        else if (ln.endsWith(".ppt")) parts.push(textPart(label + ": old .ppt format could not be read — mention that it should be saved as PDF or PPTX."));
+        else if (ln.endsWith(".pdf")) { const up = await upload(key, b, "application/pdf", it.file); parts.push(textPart(label + ":"), filePart(up)); }
+        else { const sm = await shrink(b, 1800); const up = await upload(key, sm, "image/jpeg", it.file); parts.push(textPart(label + ":"), filePart(up)); }
+      }
+      parts.push(textPart(txt));
+      const out = await generate(key, st.model || "gemini-flash-latest", parts, 0.3, !!json);
+      call("onGen", id, { ok: true, text: out });
+    } catch (e) { call("onGen", id, { ok: false, msg: friendly(e) }); }
+  }
   window.MemoraJobs = {
-    gen,
+    gen, genWith,
     busy: () => active.size > 0,
     status(sid) {
       const o = J(text.get(K(sid, "status.json")), {});

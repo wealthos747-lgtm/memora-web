@@ -46,6 +46,7 @@
     x: '<path d="M6 6l12 12M18 6 6 18"/>',
     edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
     upload: '<path d="M12 16V4.5M7 9l5-5 5 5"/><path d="M4 16.5V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2.5"/>',
+    chart: `<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>`,
     spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
@@ -87,6 +88,7 @@
   db.memos = db.memos || [];
   db.reports = db.reports || [];
   db.wins = db.wins || [];
+  db.learn = db.learn || [];
   const save = () => { A.writeDb(JSON.stringify(db)); if (window.__memReady) scheduleReminders(); };
   save();
 
@@ -270,6 +272,7 @@
       ${segSwitch("edu")}
       <div class="hello"><h1>${greet}${name}</h1><p>${fmtDay(new Date().toISOString())}, ${fmtDate(new Date().toISOString())}</p></div>
       ${nowCard}
+      ${db.sessions.some((x) => !isMeet(x)) ? `${discHomeCard()}<button class="card clar" data-goexam><div class="eyebrow">${ic("task")} Exam mode</div><div class="clh">Mock test from all your classes · ${Object.keys((db.exam && db.exam.weak) || {}).length ? Object.keys(db.exam.weak).length + " weak questions to fix" : "track your weak topics"}</div></button>` : ""}
       ${pendingSetup ? `<h2 class="sec">Get set up <span style="letter-spacing:0">${setup.length - pendingSetup}/${setup.length}</span></h2><div class="card">${setup.map((x) => `<button class="check ${x.done ? "done" : ""}" style="width:100%;text-align:left" data-setup="${x.k}"><div class="b">${x.done ? ic("check") : ""}</div><div class="tx"><b>${x.t}</b><span>${x.d}</span></div>${x.done ? "" : ic("right", "chev")}</button>`).join("")}</div>` : ""}
       <h2 class="sec">Recent classes ${db.sessions.length ? `<button data-nav2="library">See all</button>` : ""}</h2>
       ${recent.length ? `<div class="list">${recent.map(sessionItem).join("")}</div>` :
@@ -279,6 +282,8 @@
   BIND.today = (app) => {
     bindSeg(app); bindOpen(app);
     $$("[data-start]", app).forEach((b) => (b.onclick = () => startClass(b.dataset.start)));
+    $$("[data-godisc]", app).forEach((b) => (b.onclick = () => go("discover")));
+    $$("[data-goexam]", app).forEach((b) => (b.onclick = () => { exSubj = ""; ex = null; go("exam"); }));
     $$("[data-pick]", app).forEach((b) => (b.onclick = () => pickSubject((id) => startClass(id), "Start a class", "Which subject is this class for?")));
     $$("[data-resume]", app).forEach((b) => (b.onclick = () => go("record", { id: rec().sid })));
     $$("[data-import]", app).forEach((b) => (b.onclick = () => A.pickAudio()));
@@ -553,6 +558,7 @@
       <button class="card clar" data-clarity><div class="eyebrow">${ic("spark")} My clarity ${clarBusy ? "· updating…" : ""}</div>
         <div class="clh">${c ? esc(c.headline || "") : ms.length ? "Tap to see where your work stands and what to do next." : "Your clarity builds up as you record meetings."}</div>
         ${c && (c.focus || []).length ? `<div class="clf">${ic("right")} ${esc(c.focus[0])}</div>` : ""}</button>
+      ${ms.length ? discHomeCard() : ""}
       <div class="stats four">
         <button class="stat" data-go-tasks="open"><b>${cs.open}</b><span>Open</span></button>
         <button class="stat ${cs.pending ? "warn" : ""}" data-go-tasks="pending"><b>${cs.pending}</b><span>Pending</span></button>
@@ -577,6 +583,7 @@
     $$("[data-lt]", app).forEach((b) => (b.onclick = () => { lineTab = b.dataset.lt; render(); }));
     $$("[data-memo]", app).forEach((b) => (b.onclick = () => memoDone(b.dataset.memo)));
     $$("[data-clarity]", app).forEach((b) => (b.onclick = () => go("clarity")));
+    $$("[data-godisc]", app).forEach((b) => (b.onclick = () => go("discover")));
     $$("[data-resume]", app).forEach((b) => (b.onclick = () => go("record", { id: rec().sid })));
     $$("[data-import]", app).forEach((b) => (b.onclick = () => A.pickAudio()));
     $$("[data-nav2]", app).forEach((b) => (b.onclick = () => go(b.dataset.nav2)));
@@ -657,6 +664,8 @@
       body = md ? ag + `<div class="md">${mdHtml(md)}</div>` : `<div class="empty"><div class="big">Summary appears here</div>Key points, decisions, risks and next steps.</div>`;
     } else if (mTab === "insights") {
       body = insightsBody(s);
+    } else if (mTab === "disc") {
+      body = discBody(s);
     } else if (mTab === "mom") {
       const md = A.readText(s.id, "mom.md");
       body = md ? `<div class="md">${mdHtml(md)}</div><button class="btn line block" style="margin-top:14px" data-copymom>${ic("copy")} Copy minutes</button>` : `<div class="empty">Minutes of meeting appear after processing.</div>`;
@@ -692,6 +701,7 @@
         <button class="tab ${mTab === "summary" ? "on" : ""}" data-mt="summary">Summary</button>
         <button class="tab ${mTab === "insights" ? "on" : ""}" data-mt="insights">Insights</button>
         <button class="tab ${mTab === "mom" ? "on" : ""}" data-mt="mom">Minutes</button>
+        <button class="tab ${mTab === "disc" ? "on" : ""}" data-mt="disc">Discoveries</button>
         <button class="tab ${mTab === "tasks" ? "on" : ""}" data-mt="tasks">Tasks${openN ? " " + openN : ""}</button>
         <button class="tab ${mTab === "email" ? "on" : ""}" data-mt="email">Email</button>
         <button class="tab ${mTab === "transcript" ? "on" : ""}" data-mt="transcript">Transcript</button>
@@ -703,6 +713,7 @@
     bindStatus(app, s); bindTickets(app);
     $$("[data-mt]", app).forEach((b) => (b.onclick = () => { mTab = b.dataset.mt; render(); }));
     $$("#sbody [data-t]", app).forEach((b) => (b.onclick = () => playOriginal(s, Math.max(0, Number(b.dataset.t) - 3000))));
+    if (mTab === "disc") { bindDisc(app); $$("[data-dfind]", app).forEach((b) => (b.onclick = () => { A.writeText(s.id, "discoveries.json", ""); makeDiscoveries(s); render(); })); }
     $$("[data-ttl]", app).forEach((b) => (b.onclick = () => { s.title = b.dataset.ttl; s.titleLocked = true; save(); toast("Title updated"); render(); }));
     $$("[data-tkeep]", app).forEach((b) => (b.onclick = () => { s.titleLocked = true; save(); render(); }));
     $$("#sbody [data-memo]", app).forEach((b) => (b.onclick = () => memoDone(b.dataset.memo)));
@@ -866,6 +877,7 @@
     s.photos = s.photos || [];
     s.photos.push({ name, t: r.sid === sid ? r.elapsed : null });
     save(); toast("Photo added");
+    if (s.__camForNotes) { delete s.__camForNotes; if (db.settings.apiKey) { runMerge(s); return; } }
     if (view === "session" && params.id === sid) render();
   };
 
@@ -987,9 +999,9 @@
     } else if (curTab === "revise") {
       body = reviseBody(s);
     } else if (curTab === "photos") {
-      const base = A.sessionPath(s.id);
-      body = `<div class="photos">${photos.map((p) => `<button class="ph" data-ph="${esc(p.name)}"><img src="${fileSrc(s.id, "photos/" + p.name)}">${p.t != null ? `<span>${clock(p.t)}</span>` : ""}</button>`).join("")}
-        <button class="ph" data-addph style="display:grid;place-items:center;border:1px dashed var(--line2);color:var(--muted)">${ic("plus")}</button></div>`;
+      body = materialsBody(s);
+    } else if (curTab === "disc") {
+      body = discBody(s);
     }
     return `<button class="back" data-back>${ic("left")} ${esc(sb.name)}</button>
       <div class="shead"><div class="eyebrow" style="color:${sb.color}">${esc(sb.name)}${sb.teacher ? " · " + esc(sb.teacher) : ""}</div>
@@ -1009,7 +1021,8 @@
         <button class="tab ${curTab === "notes" ? "on" : ""}" data-tab="notes">Notes</button>
         <button class="tab ${curTab === "transcript" ? "on" : ""}" data-tab="transcript">Transcript</button>
         <button class="tab ${curTab === "marks" ? "on" : ""}" data-tab="marks">Important${marks.length ? " " + marks.length : ""}</button>
-        <button class="tab ${curTab === "photos" ? "on" : ""}" data-tab="photos">Photos${photos.length ? " " + photos.length : ""}</button>
+        <button class="tab ${curTab === "photos" ? "on" : ""}" data-tab="photos">Notes & slides${photos.length + (s.materials || []).length ? " " + (photos.length + (s.materials || []).length) : ""}</button>
+        <button class="tab ${curTab === "disc" ? "on" : ""}" data-tab="disc">Discoveries${(() => { const d = J(A.readText(s.id, "discoveries.json"), null); return d && d.items && d.items.length ? " " + d.items.length : ""; })()}</button>
         <button class="tab ${curTab === "revise" ? "on" : ""}" data-tab="revise">Revise</button>
       </div>
       <div id="sbody">${body}</div>`;
@@ -1028,6 +1041,8 @@
     $$("[data-t]", app).forEach((b) => (b.onclick = () => playOriginal(s, Math.max(0, Number(b.dataset.t) - (b.classList.contains("item") ? 20000 : 3000)))));
     $$("[data-ph]", app).forEach((b) => (b.onclick = () => viewPhoto(s, b.dataset.ph)));
     $$("[data-addph]", app).forEach((b) => (b.onclick = () => photoSheet(s.id)));
+    if (curTab === "photos") bindMaterials(app, s);
+    if (curTab === "disc") { bindDisc(app); $$("[data-dfind]", app).forEach((b) => (b.onclick = () => { A.writeText(s.id, "discoveries.json", ""); makeDiscoveries(s); render(); })); }
     const L = $("[data-listen]", app);
     if (L) L.onclick = () => listen(s);
     const pdf = $("[data-pdf]", app);
@@ -1140,6 +1155,8 @@
       ${hasOrig ? `<button class="opt" data-a="orig">${ic("play")}<div class="tx"><b>Play original recording</b><span>The full class audio</span></div></button>` : ""}
       ${ready ? `<button class="opt" data-a="sharetxt">${ic("share")}<div class="tx"><b>Share notes as text</b><span>WhatsApp, email, Keep…</span></div></button>` : ""}
       <button class="opt" data-a="photo">${ic("cam")}<div class="tx"><b>Add board photo</b><span>Camera or gallery</span></div></button>
+      <button class="opt" data-a="mats">${ic("upload")}<div class="tx"><b>Add your notes, PPT or PDF</b><span>Memora adds what's missing to these notes</span></div></button>
+      ${ready ? `<button class="opt" data-a="slides">${ic("image")}<div class="tx"><b>Make slides (PPT)</b><span>Fresh deck from the class + your files</span></div></button>` : ""}
       <button class="opt" data-a="rename">${ic("edit")}<div class="tx"><b>Rename / change subject</b><span>Fix the class name or number</span></div></button>
       ${hasOrig ? `<button class="opt" data-a="regen">${ic("refresh")}<div class="tx"><b>Re-create notes</b><span>Run the AI again from the recording</span></div></button>` : ""}
       ${ready ? `<button class="opt" data-a="revoice">${ic("head")}<div class="tx"><b>Re-make voice recap</b><span>After changing the voice in Settings</span></div></button>` : ""}
@@ -1149,6 +1166,8 @@
       if (a === "orig") playOriginal(s, 0);
       else if (a === "sharetxt") A.shareText(`${s.title} — ${s.dateLabel}\n\n` + A.readText(s.id, notesFile(curLang)));
       else if (a === "photo") photoSheet(s.id);
+      else if (a === "mats") materialsSheet(s);
+      else if (a === "slides") { curTab = "photos"; render(); classSlides(s, !A.readText(s.id, "slides.json")); }
       else if (a === "rename") renameSheet(s);
       else if (a === "regen") confirmSheet("Re-create the notes?", "The transcript, notes and voice recap will be made again from the recording.", "Re-create", false, () => { resetMeetingTickets(s); A.process(s.id, "summary", "", "", true); setTimeout(render, 300); });
       else if (a === "revoice") { A.process(s.id, curLang ? "taudio" : "audio", curLang, langName(curLang), false); setTimeout(render, 300); }
@@ -1295,6 +1314,7 @@
       <div class="meta">${sb.teacher ? `<span>${esc(sb.teacher)}</span>` : ""}<span>${list.length} class${list.length === 1 ? "" : "es"}</span>${total ? `<span>${dur(total)} recorded</span>` : ""}</div>
       ${sb.slots && sb.slots.length ? `<div class="meta" style="margin-top:8px">${esc(scheduleText(sb))}</div>` : ""}</div>
       <div class="row" style="margin:18px 0 6px"><button class="btn gold" data-start>${ic("mic")} Class ${nextClassNo(sb.id)}</button>${sb.id ? `<button class="btn line" data-edit>${ic("edit")} Edit</button>` : ""}</div>
+      <button class="btn line block" style="margin-top:4px" data-subexam>${ic("task")} Exam mode · mock test for ${esc(sb.name)}</button>
       ${packCard(sb.id)}
       <h2 class="sec">Classes</h2>${list.length ? `<div class="list">${list.map(sessionItem).join("")}</div>` : `<div class="empty">No classes yet.</div>`}`;
   };
@@ -1304,6 +1324,7 @@
     $$("[data-start]", app).forEach((b) => (b.onclick = () => startClass(params.id || "")));
     $$("[data-edit]", app).forEach((b) => (b.onclick = () => subjectSheet(subj(params.id))));
     bindPack(app, params.id || "");
+    $$("[data-subexam]", app).forEach((b) => (b.onclick = () => { exSubj = params.id || ""; ex = null; go("exam"); }));
   };
 
   // ------------------------------------------------------------------ timetable
@@ -1598,7 +1619,7 @@
     drawPlayer();
   }
   setInterval(() => tick(false), 500);
-  setInterval(() => { try { autoContinue(); } catch (e) { } }, 15000);
+  setInterval(() => { try { autoContinue(); } catch (e) { } try { discoverNext(); } catch (e) { } }, 15000);
 
   window.onAppResume = () => { if (view !== "record") render(); };
 
@@ -2421,6 +2442,369 @@ Return ONLY JSON: {"title": deck title, "subtitle": one line, "slides": [ {"titl
     return [`Hi ${person},`, "", "Quick follow-up on these:", ...list.map((t) => `- ${t.text}${t.due ? " (due " + fmtDue(t.due) + ")" : ""}${t.pending && t.pending.reason ? " — " + t.pending.reason : ""}`), "", "Could you share the latest status? Thanks!", db.settings.name || ""].join("\n");
   }
 
+  // ================================================================== STUDY+ — notes & slides merge, class PPT, discoveries, learning list, exam mode
+  function aiGenFiles(prompt, text, json, sid, files) {
+    return new Promise((res, rej) => {
+      if (!db.settings.apiKey) { rej(new Error("Add your free Gemini AI key in Settings first.")); return; }
+      const id = "g" + (++genN) + uid(); GEN[id] = { res, rej };
+      try { A.genWith(id, prompt, text, !!json, sid, JSON.stringify(files)); } catch (e) { delete GEN[id]; rej(e); }
+    });
+  }
+  const studyLang = () => db.settings.summaryLang || "English";
+
+  // ---------- materials (notes photos, professor slides / PDFs)
+  const matBusy = {};
+  function matFiles(s) {
+    const m = (s.materials || []).map((x, i) => ({ file: x.file, label: `FILE ${i + 1} — ${x.kind === "image" ? "photo of notes" : x.kind === "pdf" ? "PDF" : "slides"} “${x.name || ""}”` }));
+    (s.photos || []).forEach((p, i) => m.push({ file: "photos/" + p.name, label: `BOARD PHOTO ${i + 1}${p.t != null ? " (taken at " + clock(p.t) + ")" : ""}` }));
+    return m;
+  }
+  window.onMaterials = (sid, list) => {
+    const s = sess(sid); if (!s || !list || !list.length) return;
+    s.materials = (s.materials || []).concat(list.map((x) => Object.assign({ at: nowISO() }, x)));
+    save(); toast(`${list.length} file${list.length > 1 ? "s" : ""} added`);
+    if (db.settings.apiKey) runMerge(s); else render();
+  };
+  function materialsSheet(s) {
+    const sh = sheet(`<h3>Add your notes & slides</h3><p class="sub">Photos of your notes, the professor's PPT or PDF. Memora reads them, adds whatever is missing to this class's notes, and refreshes the Class Book, Q&A and quiz.</p>
+      <button class="opt" data-mpick>${ic("upload")}<div class="tx"><b>Choose files</b><span>Photos, PDF or PowerPoint · pick many at once</span></div></button>
+      <button class="opt" data-mcam>${ic("cam")}<div class="tx"><b>Take a photo</b><span>Snap a page of your notes</span></div></button>`);
+    $("[data-mpick]", sh).onclick = () => { closeSheet(); A.pickMaterials(s.id); };
+    $("[data-mcam]", sh).onclick = () => { closeSheet(); s.__camForNotes = true; A.takePhoto(s.id); };
+  }
+  async function runMerge(s) {
+    if (matBusy[s.id]) return;
+    const files = matFiles(s);
+    if (!files.length) { toast("Add a photo, PDF or slides first"); return; }
+    const lang = studyLang(), sb = subj(s.subjectId) || GENERAL;
+    const set = (t) => { matBusy[s.id] = t; if (view === "session" && params.id === s.id) render(); };
+    try {
+      set("Reading your notes & slides…");
+      const read = `These files are a student's own notes (photos of handwritten or printed pages) and/or the professor's slides or PDF for the class “${s.title}” (subject: ${sb.name}).
+Read EVERYTHING carefully — handwriting, headings, arrows, tables, formulas, margins and diagrams.
+Write developed study notes in ${lang}, in clean Markdown:
+- Organise by topic in a logical order; keep EVERY point from the files, nothing dropped.
+- Expand short forms, fix spelling, complete half-written sentences only when the meaning is clear.
+- After each topic, add a short 'In simple words' explanation where it helps.
+- Describe each diagram in words (start the line with 'Diagram:').
+- Write [unreadable] for anything you cannot read — never guess.
+- Under each heading, note the source in italics, e.g. *(from your notes, page 2)* or *(from the slides)*.
+- Include any books, courses, apps, brands or websites mentioned.`;
+      const md = await aiGenFiles(read, `Class: ${s.title} · ${sb.name}${sb.teacher ? " · " + sb.teacher : ""}`, false, s.id, files);
+      A.writeText(s.id, "materials.md", md);
+      const cur = A.readText(s.id, "summary.md");
+      let added = [], covered = 0;
+      if (cur) {
+        set("Adding what's missing to the class notes…");
+        if (!A.exists(s.id, "summary.before.md")) A.writeText(s.id, "summary.before.md", cur);
+        const base = A.readText(s.id, "summary.before.md") || cur;
+        const mergeP = `Merge the student's notes and the professor's slides into the class notes.
+Rules:
+- Keep the CLASS NOTES exactly as they are — do not remove, shorten or reword anything.
+- For every point in NOTES & SLIDES: if it is already covered in the class notes, leave it.
+- If it is NOT covered, add it in the right topic section (or a new section at the right place), and end every added line with " 📎".
+- Keep the same Markdown style and language (${lang}).
+Return ONLY JSON: {"notes": the full merged Markdown, "added": [one short line per point you added], "covered": number of points that were already in the class notes}`;
+        const raw = await aiGen(mergeP, `CLASS NOTES:\n\n${base}\n\n===== NOTES & SLIDES =====\n\n${md}`, true);
+        const d = parseJ(raw) || {};
+        added = Array.isArray(d.added) ? d.added : []; covered = +d.covered || 0;
+        let notes = String(d.notes || "");
+        if (notes.length < base.length * 0.9) notes = base + "\n\n## From your notes & slides 📎\n" + (added.length ? added.map((x) => "- " + x + " 📎").join("\n") : md);
+        A.writeText(s.id, "summary.md", notes);
+      } else {
+        A.writeText(s.id, "summary.md", md); added = ["Notes created from your files"];
+      }
+      ["translations.json"].forEach(() => 0);
+      A.writeText(s.id, "quiz.json", ""); A.writeText(s.id, "slides.json", ""); A.writeText(s.id, "discoveries.json", "");
+      s.merge = { at: nowISO(), added, covered, files: files.length }; save();
+      set("");
+      toast(added.length ? `${added.length} new point${added.length > 1 ? "s" : ""} added to your notes` : "Your notes already had everything");
+      if (A.exists(s.id, "transcript.md") || A.exists(s.id, "classbook.md")) A.process(s.id, "experience", "book", "", false);
+    } catch (e) { matBusy[s.id] = ""; toast(e.message); s.merge = Object.assign(s.merge || {}, { error: e.message, errAt: nowISO() }); save(); }
+    finally { matBusy[s.id] = ""; if (view === "session") render(); }
+  }
+  function materialsBody(s) {
+    const mats = s.materials || [], photos = s.photos || [], busy = matBusy[s.id], mg = s.merge, sl = J(A.readText(s.id, "slides.json"), null);
+    const tile = (m, i) => m.kind === "image"
+      ? `<button class="ph" data-mview="${i}"><img src="${fileSrc(s.id, m.file)}"><span>Notes</span></button>`
+      : `<button class="ph doc" data-mview="${i}"><div>${ic(m.kind === "pdf" ? "file" : "image")}<b>${m.kind.toUpperCase()}</b><small>${esc((m.name || "").slice(0, 26))}</small></div></button>`;
+    return `${busy ? `<div class="card status">${ic("spark")}<div><b>${esc(busy)}</b><span>Keep Memora open · about a minute</span></div></div>` : ""}
+      ${mg && mg.at && !busy ? `<div class="card insq" style="margin-bottom:12px"><b>${mg.added && mg.added.length ? `${mg.added.length} point${mg.added.length > 1 ? "s" : ""} added to your notes 📎` : "Your class notes already covered everything"}</b>${mg.covered ? `<span class="meta" style="display:block;margin-top:2px">${mg.covered} points were already there</span>` : ""}
+        ${(mg.added || []).length ? `<ul class="ol">${mg.added.slice(0, 8).map((x) => `<li>${esc(x)}</li>`).join("")}${mg.added.length > 8 ? `<li>…and ${mg.added.length - 8} more (marked 📎 in Notes)</li>` : ""}</ul>` : ""}
+        ${A.exists(s.id, "summary.before.md") ? `<button class="lnk" style="margin-top:6px" data-mundo>Undo — restore the original notes</button>` : ""}</div>` : ""}
+      ${mg && mg.error && !busy && (!mg.at || mg.errAt > mg.at) ? `<div class="card" style="color:var(--rec);margin-bottom:12px">${esc(mg.error)} <button class="lnk" data-mmerge>Try again</button></div>` : ""}
+      <div class="photos">${mats.map(tile).join("")}${photos.map((p) => `<button class="ph" data-ph="${esc(p.name)}"><img src="${fileSrc(s.id, "photos/" + p.name)}">${p.t != null ? `<span>${clock(p.t)}</span>` : ""}</button>`).join("")}
+        <button class="ph" data-addmat style="display:grid;place-items:center;border:1px dashed var(--line2);color:var(--muted)">${ic("plus")}</button></div>
+      ${mats.length || photos.length ? `<button class="btn line block" style="margin-top:12px" data-mmerge ${busy ? "disabled" : ""}>${ic("spark")} ${mg && mg.at ? "Check again & update notes" : "Add these to my notes"}</button>` : `<p class="tip">Add photos of your notes or the professor's PPT / PDF — Memora adds anything missing to this class.</p>`}
+      ${A.exists(s.id, "materials.md") ? `<button class="btn line block" style="margin-top:8px" data-mread>${ic("book")} Read the developed notes from your files</button>` : ""}
+      <h2 class="sec">Slides (PPT)</h2>
+      <div class="card"><div class="meta" style="margin-bottom:10px">${sl ? `Ready · ${(sl.slides || []).length + 2} slides · “${esc(sl.title || s.title)}”` : "A fresh, clean deck from the class notes, your notes and the professor's slides — with speaker notes."}</div>
+        <div class="row"><button class="btn ${sl ? "line" : "gold"}" data-mslides ${slideBusy ? "disabled" : ""}>${slideBusy === s.id ? "Building…" : ic("spark") + (sl ? " Make again" : " Make slides")}</button>${sl ? `<button class="btn gold" data-mdl>${ic("down")} Download PPT</button>` : ""}</div></div>`;
+  }
+  function bindMaterials(app, s) {
+    $$("[data-addmat]", app).forEach((b) => (b.onclick = () => materialsSheet(s)));
+    $$("[data-mmerge]", app).forEach((b) => (b.onclick = () => runMerge(s)));
+    $$("[data-mread]", app).forEach((b) => (b.onclick = () => { const sh = sheet(`<h3>From your notes & slides</h3><div class="md" style="max-height:62vh;overflow:auto">${mdHtml(A.readText(s.id, "materials.md"))}</div>`); }));
+    $$("[data-mundo]", app).forEach((b) => (b.onclick = () => confirmSheet("Restore the original notes?", "The points added from your files will be removed from the Notes tab. Your files stay here.", "Restore", false, () => { A.writeText(s.id, "summary.md", A.readText(s.id, "summary.before.md")); s.merge = null; save(); render(); })));
+    $$("[data-mview]", app).forEach((b) => (b.onclick = () => {
+      const m = (s.materials || [])[+b.dataset.mview]; if (!m) return;
+      const sh = sheet(`<h3>${esc(m.name || "File")}</h3>${m.kind === "image" ? `<img src="${fileSrc(s.id, m.file)}" style="width:100%;border-radius:12px;margin-bottom:12px">` : ""}
+        <div class="row">${m.kind !== "image" ? `<button class="btn line" data-mopen>${ic("down")} Open / download</button>` : ""}<button class="btn danger" data-mdel>${ic("trash")} Remove</button></div>`);
+      const op = $("[data-mopen]", sh); if (op) op.onclick = () => { closeSheet(); A.exportFile(s.id, m.file, m.name || m.file.split("/").pop()); };
+      $("[data-mdel]", sh).onclick = () => { A.deleteMaterial(s.id, m.file); s.materials = s.materials.filter((x) => x !== m); save(); closeSheet(); render(); };
+    }));
+    $$("[data-mslides]", app).forEach((b) => (b.onclick = () => classSlides(s, true)));
+    $$("[data-mdl]", app).forEach((b) => (b.onclick = () => classSlides(s, false)));
+  }
+
+  // ---------- class slides (PPT) from notes + student's notes + professor's slides
+  let slideBusy = "";
+  async function classSlides(s, rebuild) {
+    if (slideBusy) return;
+    slideBusy = s.id; render();
+    try {
+      let d = J(A.readText(s.id, "slides.json"), null);
+      if (!d || rebuild) {
+        const sb = subj(s.subjectId) || GENERAL;
+        const prompt = `Create a fresh, clean teaching deck for the class “${s.title}” (${sb.name}) from the material below: the class notes, the student's own notes and the professor's slides. Cover ALL the main topics in the order taught; make it clearer and better structured than the professor's original slides.
+8 to 14 content slides. Each slide: a short title (max 7 words), 3 to 5 bullets (max 14 words each, with the key terms, examples and numbers), an optional "example" line, and speaker notes (2 to 4 sentences explaining the slide simply).
+Language: ${studyLang()}. Never invent facts.
+Return ONLY JSON: {"title": deck title, "subtitle": one line, "slides": [ {"title": "...", "bullets": ["..."], "example": "" , "notes": "..."} ], "takeaways": [3 to 5 key takeaways]}`;
+        const raw = await aiGen(prompt, `CLASS NOTES:\n${A.readText(s.id, "summary.md")}\n\nNOTES & SLIDES FROM FILES:\n${A.readText(s.id, "materials.md") || "-"}`, true);
+        d = parseJ(raw); if (!d || !Array.isArray(d.slides)) throw new Error("Could not read the slide content. Try again.");
+        A.writeText(s.id, "slides.json", JSON.stringify(d));
+      }
+      const sb = subj(s.subjectId) || GENERAL;
+      const b64 = await buildDeck({ kicker: sb.name.toUpperCase(), title: d.title || s.title, subtitle: d.subtitle || "", by: `${sb.teacher ? sb.teacher + " · " : ""}${s.dateLabel || fmtDate(s.date)}`, foot: s.title.includes(sb.name) ? s.title : `${sb.name} · ${s.title}` }, d.slides, d.takeaways ? { title: "Key takeaways", bullets: d.takeaways } : null);
+      if (!A.writeBase64(s.id, "slides.pptx", b64)) throw new Error("Could not save the slides");
+      A.exportFile(s.id, "slides.pptx", `${fileBase(s)} - slides.pptx`.replace(/[–—·]/g, "-"));
+    } catch (e) { toast(e.message); }
+    finally { slideBusy = ""; if (view === "session") render(); }
+  }
+  async function buildDeck(meta, slides, closing) {
+    await loadScript("pptxgen.bundle.js");
+    const pp = new window.PptxGenJS(); pp.layout = "LAYOUT_WIDE"; pp.author = db.settings.name || "Memora"; pp.title = meta.title;
+    const IND = "4F46E5", VIO = "7C5CF0", INK = "1C1B22", MUT = "6E6B76", F = "Calibri";
+    let n = 1, s = pp.addSlide(); s.background = { color: IND };
+    s.addShape(pp.ShapeType.ellipse, { x: 9.6, y: -1.6, w: 5.5, h: 5.5, fill: { color: VIO, transparency: 35 }, line: { color: VIO, transparency: 100 } });
+    s.addText(meta.kicker || "", { x: 0.8, y: 2.0, w: 9, h: 0.4, fontSize: 13, bold: true, color: "DCD9FF", charSpacing: 4, fontFace: F });
+    s.addText(meta.title, { x: 0.8, y: 2.5, w: 10.5, h: 1.5, fontSize: 38, bold: true, color: "FFFFFF", fontFace: F, valign: "top" });
+    s.addText(meta.subtitle || "", { x: 0.8, y: 4.1, w: 10.5, h: 0.8, fontSize: 17, color: "EDEBFF", fontFace: F });
+    s.addText(meta.by || "", { x: 0.8, y: 6.3, w: 11, h: 0.4, fontSize: 12, color: "DCD9FF", fontFace: F });
+    const foot = (sl) => { sl.addText(meta.foot || "", { x: 0.5, y: 7.05, w: 9, h: 0.3, fontSize: 9, color: MUT, fontFace: F }); sl.addText(String(n), { x: 12.3, y: 7.05, w: 0.6, h: 0.3, fontSize: 9, color: MUT, align: "right", fontFace: F }); };
+    // agenda
+    s = pp.addSlide(); n++;
+    s.addText("What we cover", { x: 0.6, y: 0.4, w: 12, h: 0.8, fontSize: 28, bold: true, color: INK, fontFace: F });
+    s.addText(slides.slice(0, 12).map((x, i) => ({ text: `${i + 1}.  ${x.title}`, options: { paraSpaceAfter: 6, breakLine: true } })), { x: 0.7, y: 1.4, w: 11.8, h: 5.4, fontSize: slides.length > 9 ? 15 : 18, color: INK, fontFace: F, valign: "top" });
+    foot(s);
+    slides.forEach((x) => {
+      s = pp.addSlide(); n++;
+      s.addShape(pp.ShapeType.rect, { x: 0, y: 0, w: 0.18, h: 7.5, fill: { color: IND }, line: { color: IND } });
+      s.addText(x.title || "", { x: 0.6, y: 0.4, w: 12, h: 0.9, fontSize: 28, bold: true, color: INK, fontFace: F });
+      s.addText((x.bullets || []).map((t) => ({ text: t, options: { bullet: { code: "25CF" }, paraSpaceAfter: 10 } })), { x: 0.7, y: 1.5, w: 11.8, h: x.example ? 4.1 : 5.2, fontSize: 19, color: INK, fontFace: F, valign: "top" });
+      if (x.example) { s.addShape(pp.ShapeType.roundRect, { x: 0.7, y: 5.75, w: 11.9, h: 1.0, fill: { color: "F3F2FD" }, line: { color: "E2E0F7" }, rectRadius: 0.1 }); s.addText("Example:  " + x.example, { x: 0.9, y: 5.8, w: 11.5, h: 0.9, fontSize: 14, color: INK, fontFace: F, italic: true }); }
+      if (x.notes) s.addNotes(x.notes);
+      foot(s);
+    });
+    if (closing) {
+      s = pp.addSlide(); n++; s.background = { color: IND };
+      s.addText(closing.title, { x: 0.8, y: 0.8, w: 11, h: 0.7, fontSize: 28, bold: true, color: "FFFFFF", fontFace: F });
+      s.addText((closing.bullets || []).map((t) => ({ text: t, options: { bullet: { code: "2713" }, paraSpaceAfter: 12 } })), { x: 0.9, y: 1.8, w: 11.5, h: 5, fontSize: 20, color: "FFFFFF", fontFace: F, valign: "top" });
+    }
+    return pp.write({ outputType: "base64" });
+  }
+
+  // ---------- discoveries: new information beyond the topic (classes and meetings)
+  const DTYPES = { market: ["Market & industry", "chart"], story: ["Success stories", "starf"], app: ["Apps & tools", "spark"], brand: ["Brands & companies", "flag"], book: ["Books", "book"], course: ["Courses & certifications", "cal"], person: ["People to know", "users"], website: ["Websites & resources", "globe"], idea: ["Ideas & tips", "spark"] };
+  const dKey = (it) => (it.type + "|" + String(it.name || "").toLowerCase().trim());
+  let discBusy = "";
+  function discoverNext() {
+    if (discBusy || !db.settings.apiKey) return;
+    const s = db.sessions.slice().sort((a, b) => b.date.localeCompare(a.date)).find((x) => A.exists(x.id, "summary.md") && A.exists(x.id, "transcript.md") && !A.readText(x.id, "discoveries.json") && !job(x.id).running && (!x.discTried || Date.now() - new Date(x.discTried).getTime() > 6 * 3600000));
+    if (s) makeDiscoveries(s);
+  }
+  function makeDiscoveries(s) {
+    if (discBusy) return;
+    discBusy = s.id; s.discTried = nowISO(); save();
+    const kind = isMeet(s) ? "meeting" : "class";
+    const prompt = `Below is the full transcript of a ${kind} the user recorded (“${s.title}”). The main topic is already covered in separate notes.
+Your job: find the valuable NEW information that goes BEYOND the main topic — things the speaker mentioned on the side that the user may not know and could use in future:
+market or industry facts and trends, success (or failure) stories, apps and tools, brands and companies, books recommended or mentioned, courses and certifications, people worth knowing, websites and resources, practical ideas and tips.
+Rules: only things actually said (Tamil and English are both possible). Never miss a book, course, app or brand name. Do NOT repeat the main topic's teaching. Never invent facts; numbers are "as mentioned".
+For each item give a clear explanation in simple ${studyLang()} using your general knowledge (what it is), why it matters for the user, and one concrete next step.
+Return ONLY JSON: {"items": [ {"type": "market"|"story"|"app"|"brand"|"book"|"course"|"person"|"website"|"idea", "name": short name, "said": what was said, one line, "at": "MM:SS" timestamp from the transcript, "explain": 2-3 sentence explanation, "why": one line, "next": one line next step} ]} — {"items": []} if nothing new was mentioned.`;
+    const tr = A.readText(s.id, "transcript.md").slice(0, 300000) + (A.readText(s.id, "materials.md") ? "\n\n=== NOTES & SLIDES ===\n" + A.readText(s.id, "materials.md").slice(0, 60000) : "");
+    aiGen(prompt, tr, true).then((raw) => {
+      const d = parseJ(raw); if (!d) throw new Error("bad");
+      const items = (d.items || []).filter((x) => x && x.name && DTYPES[x.type]);
+      A.writeText(s.id, "discoveries.json", JSON.stringify({ at: nowISO(), items }));
+      if (items.length) toast(`${items.length} new discover${items.length > 1 ? "ies" : "y"} in “${s.title.slice(0, 30)}”`);
+    }).catch(() => { }).then(() => { discBusy = ""; if (view === "discover" || view === "session") render(); });
+  }
+  function allDiscoveries() {
+    const out = [];
+    db.sessions.forEach((s) => { const d = J(A.readText(s.id, "discoveries.json"), null); if (d) (d.items || []).forEach((it) => out.push(Object.assign({ sid: s.id, date: s.date }, it))); });
+    return out.sort((a, b) => b.date.localeCompare(a.date));
+  }
+  const learnOf = (it) => (db.learn || []).find((l) => l.key === dKey(it));
+  function discCard(it, showSrc) {
+    const [tl, icn] = DTYPES[it.type] || ["Other", "spark"], l = learnOf(it), s = sess(it.sid);
+    return `<div class="card dcard"><div class="dh"><div class="dic">${ic(icn)}</div><div class="tx"><b>${esc(it.name)}</b><span>${esc(tl)}${showSrc && s ? " · " + esc(s.title) : ""}</span></div>${tsMs(it.at) != null && s ? `<button class="ts" data-dt="${it.sid}|${tsMs(it.at)}">${esc(it.at)}</button>` : ""}</div>
+      ${it.said ? `<div class="dsaid">“${esc(it.said)}”</div>` : ""}
+      ${it.explain ? `<p>${esc(it.explain)}</p>` : ""}
+      ${it.why ? `<div class="dwhy"><b>Why it matters:</b> ${esc(it.why)}</div>` : ""}
+      ${it.next ? `<div class="dwhy"><b>Next step:</b> ${esc(it.next)}</div>` : ""}
+      <div class="row" style="margin-top:10px"><button class="btn small line" data-dmore="${esc(dKey(it))}" data-dsid="${it.sid}">${ic("spark")} Learn more</button>
+      <button class="btn small ${l ? "gold" : "line"}" data-dlearn="${esc(dKey(it))}" data-dsid="${it.sid}">${l ? ic("check") + " " + ({ todo: "To learn", doing: "Learning", done: "Done" })[l.status] : ic("plus") + " Learning list"}</button></div></div>`;
+  }
+  function discBody(s) {
+    const d = J(A.readText(s.id, "discoveries.json"), null);
+    if (!d) return discBusy === s.id ? `<div class="card status">${ic("spark")}<div><b>Finding new information beyond the topic…</b><span>Books, apps, brands, market facts, stories</span></div></div>`
+      : `<div class="empty"><div class="big">Discoveries</div>Books, courses, apps, brands, market facts and stories mentioned beyond the main topic.${A.exists(s.id, "transcript.md") ? `<br><button class="btn gold" style="margin-top:12px" data-dfind>${ic("spark")} Find them now</button>` : "<br>They appear after the transcript is ready."}</div>`;
+    if (!(d.items || []).length) return `<div class="empty">Nothing beyond the main topic was mentioned here.<br><button class="lnk" data-dfind>Check again</button></div>`;
+    const by = {}; d.items.forEach((it) => (by[it.type] = by[it.type] || []).push(Object.assign({ sid: s.id, date: s.date }, it)));
+    return Object.keys(DTYPES).filter((k) => by[k]).map((k) => `<h2 class="sec">${DTYPES[k][0]} · ${by[k].length}</h2>${by[k].map((it) => discCard(it, false)).join("")}`).join("");
+  }
+  function learnMore(key, sid) {
+    const it = allDiscoveries().find((x) => dKey(x) === key && x.sid === sid) || allDiscoveries().find((x) => dKey(x) === key); if (!it) return;
+    db.dmore = db.dmore || {};
+    const show = () => { const sh = sheet(`<h3>${esc(it.name)}</h3><p class="sub">${esc((DTYPES[it.type] || ["Other"])[0])}</p><div class="md" style="max-height:62vh;overflow:auto">${db.dmore[key] ? mdHtml(db.dmore[key]) : `<div class="empty">Preparing a short guide…</div>`}</div>`); };
+    show();
+    if (db.dmore[key]) return;
+    const prompt = `Write a short, practical guide in ${studyLang()} about “${it.name}” (${(DTYPES[it.type] || ["topic"])[0]}). It was mentioned in my ${isMeet(sess(it.sid)) ? "meeting" : "class"}: “${it.said || ""}”.
+Use clean Markdown, max 250 words: '## What it is', '## Key ideas' (3-6 bullets), '## How I can use it' (practical), ${it.type === "book" ? "'## Chapters / big lessons'," : it.type === "course" ? "'## Who offers it, duration and level (as far as you know)'," : ""} '## Next step'. If you are not sure of a fact, say so.`;
+    aiGen(prompt, "", false).then((md) => { db.dmore[key] = md; save(); if ($("#sheet.on")) show(); }).catch((e) => toast(e.message));
+  }
+  function toggleLearn(key, sid) {
+    db.learn = db.learn || [];
+    const it = allDiscoveries().find((x) => dKey(x) === key);
+    const l = db.learn.find((x) => x.key === key);
+    if (!l) { db.learn.push({ key, name: it ? it.name : key.split("|")[1], type: it ? it.type : "idea", sid, status: "todo", at: nowISO() }); toast("Added to your learning list"); }
+    else { l.status = l.status === "todo" ? "doing" : l.status === "doing" ? "done" : "todo"; if (l.status === "done") l.doneAt = nowISO(); toast(({ todo: "To learn", doing: "Learning now", done: "Done ✓" })[l.status]); }
+    save(); render();
+  }
+  function bindDisc(app) {
+    $$("[data-dmore]", app).forEach((b) => (b.onclick = () => learnMore(b.dataset.dmore, b.dataset.dsid)));
+    $$("[data-dlearn]", app).forEach((b) => (b.onclick = () => toggleLearn(b.dataset.dlearn, b.dataset.dsid)));
+    $$("[data-dt]", app).forEach((b) => (b.onclick = () => { const [sid, ms] = b.dataset.dt.split("|"); const s = sess(sid); if (s) playOriginal(s, Math.max(0, +ms - 3000)); }));
+  }
+  let dFilter = "", dTab = "all";
+  function digestText(items) {
+    const by = {}; items.forEach((it) => (by[it.type] = by[it.type] || []).push(it));
+    return [`This week's discoveries (${items.length})`, ""].concat(Object.keys(DTYPES).filter((k) => by[k]).flatMap((k) => [DTYPES[k][0] + ":", ...by[k].map((it) => `- ${it.name}${it.why ? " — " + it.why : ""}`), ""])).join("\n");
+  }
+  VIEWS.discover = () => {
+    const all = allDiscoveries(), w0 = weekStart(new Date()).toISOString();
+    const week = all.filter((x) => x.date >= w0);
+    const learn = (db.learn || []).slice().sort((a, b) => ["doing", "todo", "done"].indexOf(a.status) - ["doing", "todo", "done"].indexOf(b.status));
+    const types = Object.keys(DTYPES).filter((k) => all.some((x) => x.type === k));
+    const list = all.filter((x) => !dFilter || x.type === dFilter);
+    const pending = db.sessions.filter((x) => A.exists(x.id, "transcript.md") && !A.readText(x.id, "discoveries.json")).length;
+    return `<button class="back" data-back>${ic("left")} Back</button>
+      <div class="shead"><div class="eyebrow">${ic("spark")} Discoveries</div><h1>Beyond the topic</h1><div class="meta"><span>${all.length} things worth knowing from your classes and meetings</span></div></div>
+      <div class="segs" style="margin-top:14px"><button class="seg ${dTab === "all" ? "on" : ""}" data-dtab="all">All · ${all.length}</button><button class="seg ${dTab === "week" ? "on" : ""}" data-dtab="week">This week · ${week.length}</button><button class="seg ${dTab === "learn" ? "on" : ""}" data-dtab="learn">Learning list · ${learn.filter((l) => l.status !== "done").length}</button></div>
+      ${discBusy ? `<div class="card status" style="margin-bottom:10px">${ic("spark")}<div><b>Reading “${esc((sess(discBusy) || {}).title || "")}”…</b><span>${pending} recording${pending === 1 ? "" : "s"} to go</span></div></div>` : ""}
+      ${dTab === "learn" ? (learn.length ? learn.map((l) => `<div class="card dcard"><div class="dh"><div class="dic">${ic((DTYPES[l.type] || ["", "spark"])[1])}</div><div class="tx"><b>${esc(l.name)}</b><span>${esc((DTYPES[l.type] || ["Other"])[0])}${sess(l.sid) ? " · " + esc(sess(l.sid).title) : ""}</span></div>
+          <button class="chip ${l.status === "done" ? "ok" : l.status === "doing" ? "gold" : ""}" data-dlearn="${esc(l.key)}" data-dsid="${l.sid}">${({ todo: "To learn", doing: "Learning", done: "Done ✓" })[l.status]}</button></div>
+          <div class="row" style="margin-top:8px"><button class="btn small line" data-dmore="${esc(l.key)}" data-dsid="${l.sid}">${ic("spark")} Learn more</button></div></div>`).join("") : `<div class="empty">Tap “Learning list” on any book, course or idea to track it here. Memora reminds you every Sunday.</div>`)
+      : dTab === "week" ? (week.length ? `<div class="card insq" style="margin-bottom:10px"><b>${week.length} new things this week</b><div class="mini" style="margin-top:6px">${Object.keys(DTYPES).filter((k) => week.some((x) => x.type === k)).map((k) => `<span>${DTYPES[k][0]} <b>${week.filter((x) => x.type === k).length}</b></span>`).join("")}</div><button class="btn small line" style="margin-top:10px" data-dshare>${ic("share")} Share digest</button></div>${week.map((it) => discCard(it, true)).join("")}` : `<div class="empty">Nothing new yet this week.</div>`)
+      : `${types.length > 1 ? `<div class="langs" style="margin-top:0"><button class="lang ${!dFilter ? "on" : ""}" data-df="">All</button>${types.map((k) => `<button class="lang ${dFilter === k ? "on" : ""}" data-df="${k}">${DTYPES[k][0]}</button>`).join("")}</div>` : ""}
+        ${list.map((it) => discCard(it, true)).join("") || `<div class="empty"><div class="big">Nothing yet</div>As your recordings are processed, Memora pulls out books, courses, apps, brands, market facts and stories mentioned beyond the main topic.</div>`}`}`;
+  };
+  BIND.discover = (app) => {
+    $("[data-back]", app).onclick = back;
+    bindDisc(app);
+    $$("[data-dtab]", app).forEach((b) => (b.onclick = () => { dTab = b.dataset.dtab; render(); }));
+    $$("[data-df]", app).forEach((b) => (b.onclick = () => { dFilter = b.dataset.df; render(); }));
+    $$("[data-dshare]", app).forEach((b) => (b.onclick = () => { const w0 = weekStart(new Date()).toISOString(); A.shareText(digestText(allDiscoveries().filter((x) => x.date >= w0))); }));
+    discoverNext();
+  };
+  function discHomeCard() {
+    const all = allDiscoveries(), w0 = weekStart(new Date()).toISOString(), wk = all.filter((x) => x.date >= w0).length, lt = (db.learn || []).filter((l) => l.status !== "done").length;
+    return `<button class="card clar" data-godisc><div class="eyebrow">${ic("spark")} Discoveries ${discBusy ? "· finding…" : ""}</div>
+      <div class="clh">${all.length ? `${wk ? wk + " new this week · " : ""}${all.length} books, apps, brands & insights beyond the topic` : "Books, apps, brands and market insights mentioned beyond the topic appear here."}</div>
+      ${lt ? `<div class="clf">${ic("book")} ${lt} on your learning list</div>` : ""}</button>`;
+  }
+
+  // ---------- exam mode: mock tests across classes, weak-topic tracking
+  let ex = null, exSubj = "", exN = 15, exWeak = false;
+  function examPool(subjectId, weakOnly) {
+    const ss = db.sessions.filter((s) => !isMeet(s) && (!subjectId || s.subjectId === subjectId));
+    const pool = [];
+    ss.forEach((s) => { const q = J(A.readText(s.id, "quiz.json"), null); if (q) (q.questions || []).forEach((it) => pool.push(Object.assign({ sid: s.id }, it))); });
+    const weak = (db.exam && db.exam.weak) || {};
+    return weakOnly ? pool.filter((x) => weak[x.q]) : pool;
+  }
+  function weakClasses() {
+    const w = (db.exam && db.exam.weak) || {}, c = {};
+    Object.values(w).forEach((x) => { c[x.sid] = (c[x.sid] || 0) + x.n; });
+    return Object.entries(c).filter(([sid]) => sess(sid)).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  }
+  VIEWS.exam = () => {
+    db.exam = db.exam || { weak: {}, history: [] };
+    if (ex && ex.i < ex.qs.length) {
+      const it = ex.qs[ex.i], s = sess(it.sid);
+      return `<button class="back" data-exquit>${ic("left")} End test</button>
+        <div class="bar" style="margin:6px 0 14px"><i style="width:${Math.round((ex.i / ex.qs.length) * 100)}%"></i></div>
+        <div class="card"><div class="eyebrow" style="margin-bottom:8px">Question ${ex.i + 1} of ${ex.qs.length} · Score ${ex.score}${s ? " · " + esc(s.title) : ""}</div>
+        <div style="font-weight:600;font-size:14.5px;line-height:1.45;margin-bottom:12px">${esc(it.q)}</div>
+        ${(it.options || []).map((o, k) => { let cls = ""; if (ex.picked !== null) { if (k === it.answer) cls = "right"; else if (k === ex.picked) cls = "wrong"; } return `<button class="qopt ${cls}" data-expick="${k}" ${ex.picked !== null ? "disabled" : ""}><span>${"ABCD"[k]}</span>${esc(o)}</button>`; }).join("")}
+        ${ex.picked !== null ? `<div class="qwhy">${ex.picked === it.answer ? "✓ Correct. " : "✗ Not quite. "}${esc(it.why || "")}</div><button class="btn gold block" style="margin-top:10px" data-exnext>${ex.i + 1 < ex.qs.length ? "Next question" : "See result"}</button>` : ""}</div>`;
+    }
+    if (ex && ex.i >= ex.qs.length) {
+      const per = {}; ex.log.forEach((l) => { per[l.sid] = per[l.sid] || [0, 0]; per[l.sid][1]++; if (l.ok) per[l.sid][0]++; });
+      const pct = Math.round((ex.score / ex.qs.length) * 100);
+      return `<button class="back" data-exquit>${ic("left")} Exam mode</button>
+        <div class="card" style="text-align:center;padding:24px"><div style="font-size:34px;font-weight:700">${ex.score}/${ex.qs.length}</div><p class="meta">${pct}% · ${pct >= 80 ? "Exam-ready on these classes." : pct >= 50 ? "Good base — revise the weak classes below." : "Revise the classes below, then test again."}</p>
+        <div class="row"><button class="btn line" data-exagain>Test again</button>${ex.log.some((l) => !l.ok) ? `<button class="btn gold" data-exwrong>Practise wrong ones</button>` : ""}</div></div>
+        <h2 class="sec">By class</h2><div class="list">${Object.entries(per).sort((a, b) => a[1][0] / a[1][1] - b[1][0] / b[1][1]).map(([sid, [ok, n]]) => `<button class="item" data-open="${sid}"><div class="ic" style="color:${ok / n >= 0.8 ? "var(--ok)" : ok / n >= 0.5 ? "var(--gold)" : "var(--rec)"}"><b>${Math.round((ok / n) * 100)}%</b></div><div class="tx"><div class="t1">${esc((sess(sid) || {}).title || "")}</div><div class="t2">${ok} of ${n} right</div></div>${ic("right", "chev")}</button>`).join("")}</div>`;
+    }
+    const pool = examPool(exSubj, exWeak), allPool = examPool(exSubj, false);
+    const noQuiz = db.sessions.filter((s) => !isMeet(s) && (!exSubj || s.subjectId === exSubj) && A.exists(s.id, "summary.md") && !J(A.readText(s.id, "quiz.json"), null));
+    const making = noQuiz.filter((s) => job(s.id).running && job(s.id).job === "quiz").length;
+    const wc = weakClasses(), hist = (db.exam.history || []).slice(-5).reverse();
+    return `<button class="back" data-back>${ic("left")} Back</button>
+      <div class="shead"><div class="eyebrow">${ic("task")} Exam mode</div><h1>Mock test</h1><div class="meta"><span>Questions from every class${exSubj ? " of this subject" : ""}, your notes and the professor's slides</span></div></div>
+      <div class="langs" style="margin-top:14px"><button class="lang ${!exSubj ? "on" : ""}" data-exs="">All subjects</button>${db.subjects.map((x) => `<button class="lang ${exSubj === x.id ? "on" : ""}" data-exs="${x.id}">${esc(x.name)}</button>`).join("")}</div>
+      <div class="langs" style="margin-top:2px">${[10, 15, 25].map((n) => `<button class="lang ${exN === n ? "on" : ""}" data-exn="${n}">${n} questions</button>`).join("")}<button class="lang ${exWeak ? "on" : ""}" data-exw>${ic("flag")} Weak only</button></div>
+      <div class="card" style="margin-top:10px"><div class="meta">${pool.length} questions available${exWeak ? " from your weak areas" : ""} · from ${new Set(allPool.map((x) => x.sid)).size} classes</div>
+        <button class="btn gold block" style="margin-top:10px" data-exstart ${pool.length ? "" : "disabled"}>${ic("play")} Start the test</button></div>
+      ${noQuiz.length ? `<div class="card" style="margin-top:10px"><b>${noQuiz.length} class${noQuiz.length > 1 ? "es" : ""} not in the question bank yet</b><div class="meta" style="margin:4px 0 10px">${making ? `Preparing ${making}…` : "Prepare their questions to include them."}</div><button class="btn line block" data-exprep ${making ? "disabled" : ""}>${ic("spark")} Prepare questions</button></div>` : ""}
+      ${wc.length ? `<h2 class="sec">Weak areas</h2><div class="list">${wc.map(([sid, n]) => `<button class="item" data-open="${sid}"><div class="ic" style="color:var(--rec)">${ic("flag")}</div><div class="tx"><div class="t1">${esc(sess(sid).title)}</div><div class="t2">${n} missed answer${n > 1 ? "s" : ""} · tap to revise</div></div>${ic("right", "chev")}</button>`).join("")}</div>` : ""}
+      ${hist.length ? `<h2 class="sec">Recent tests</h2><div class="card" style="padding:6px 14px">${hist.map((h) => `<div class="agi"><span class="chip ${h.score / h.total >= 0.8 ? "ok" : h.score / h.total >= 0.5 ? "gold" : "err"}">${Math.round((h.score / h.total) * 100)}%</span><div><b>${h.score}/${h.total} · ${esc(h.label)}</b><span>${fmtDate(h.at)}</span></div></div>`).join("")}</div>` : ""}`;
+  };
+  BIND.exam = (app) => {
+    db.exam = db.exam || { weak: {}, history: [] };
+    $$("[data-back]", app).forEach((b) => (b.onclick = back));
+    bindOpen(app);
+    $$("[data-exs]", app).forEach((b) => (b.onclick = () => { exSubj = b.dataset.exs; render(); }));
+    $$("[data-exn]", app).forEach((b) => (b.onclick = () => { exN = +b.dataset.exn; render(); }));
+    $$("[data-exw]", app).forEach((b) => (b.onclick = () => { exWeak = !exWeak; render(); }));
+    const start = (qs) => { ex = { qs, i: 0, score: 0, picked: null, log: [], label: exSubj ? (subj(exSubj) || GENERAL).name : "All subjects" }; render(); window.scrollTo(0, 0); };
+    $$("[data-exstart]", app).forEach((b) => (b.onclick = () => { const p = examPool(exSubj, exWeak).sort(() => Math.random() - 0.5); start(p.slice(0, exN)); }));
+    $$("[data-exprep]", app).forEach((b) => (b.onclick = () => {
+      const list = db.sessions.filter((s) => !isMeet(s) && (!exSubj || s.subjectId === exSubj) && A.exists(s.id, "summary.md") && !J(A.readText(s.id, "quiz.json"), null) && !job(s.id).running).slice(0, 4);
+      list.forEach((s) => A.process(s.id, "quiz", "", "", false)); toast(`Preparing questions for ${list.length} class${list.length > 1 ? "es" : ""}…`); setTimeout(render, 400);
+    }));
+    $$("[data-expick]", app).forEach((b) => (b.onclick = () => {
+      const it = ex.qs[ex.i]; ex.picked = +b.dataset.expick; const ok = ex.picked === it.answer;
+      if (ok) ex.score++;
+      ex.log.push({ sid: it.sid, ok });
+      const w = db.exam.weak;
+      if (!ok) w[it.q] = { sid: it.sid, q: it.q, n: ((w[it.q] && w[it.q].n) || 0) + 1 };
+      else if (w[it.q]) { w[it.q].n--; if (w[it.q].n <= 0) delete w[it.q]; }
+      save(); render();
+    }));
+    $$("[data-exnext]", app).forEach((b) => (b.onclick = () => {
+      ex.i++; ex.picked = null;
+      if (ex.i >= ex.qs.length) { db.exam.history.push({ at: nowISO(), score: ex.score, total: ex.qs.length, label: ex.label }); while (db.exam.history.length > 50) db.exam.history.shift(); save(); }
+      render(); window.scrollTo(0, 0);
+    }));
+    $$("[data-exquit]", app).forEach((b) => (b.onclick = () => { ex = null; render(); }));
+    $$("[data-exagain]", app).forEach((b) => (b.onclick = () => { const p = examPool(exSubj, exWeak).sort(() => Math.random() - 0.5); start(p.slice(0, exN)); }));
+    $$("[data-exwrong]", app).forEach((b) => (b.onclick = () => { const wrong = ex.qs.filter((q, i) => ex.log[i] && !ex.log[i].ok); start(wrong); }));
+  };
+
   // ================================================================== REMINDERS
   let remT;
   function scheduleReminders() {
@@ -2455,6 +2839,12 @@ Return ONLY JSON: {"title": deck title, "subtitle": one line, "slides": [ {"titl
           const at = new Date(y, mo - 1, dd, 10, 0).getTime();
           if (at > now) out.push({ id: `f_${t.id}`, at, title: `Follow up${t.pending.followWith ? " with " + t.pending.followWith : ""}`, text: t.text.slice(0, 90), action: `task:${t.id}` });
         });
+      }
+      if ((db.learn || []).some((l) => l.status !== "done") || db.sessions.some((x) => A.readText(x.id, "discoveries.json"))) {
+        const su = new Date(); su.setDate(su.getDate() + ((7 - su.getDay()) % 7)); su.setHours(10, 0, 0, 0);
+        if (su.getTime() <= now) su.setDate(su.getDate() + 7);
+        const lt = (db.learn || []).filter((l) => l.status !== "done").length;
+        out.push({ id: "disc_week", at: su.getTime(), title: "Your week's discoveries", text: lt ? `${lt} on your learning list — pick one for this week` : "Books, apps and ideas from this week's recordings", action: "discover:" });
       }
       if (st.remReport !== false && db.sessions.some(isMeet)) {
         const f = new Date(); f.setDate(f.getDate() + ((5 - f.getDay() + 7) % 7)); f.setHours(17, 0, 0, 0);
@@ -2491,6 +2881,7 @@ Return ONLY JSON: {"title": deck title, "subtitle": one line, "slides": [ {"titl
     else if (a.startsWith("task:")) { db.settings.segment = "meet"; save(); go("tasks"); const t = db.tickets.find((x) => x.id === a.slice(5)); if (t) ticketSheet(t); }
     else if (a.startsWith("brief:")) { db.settings.segment = "meet"; save(); go("brief", { id: a.slice(6) }); }
     else if (a.startsWith("report:")) { db.settings.segment = "meet"; save(); go("reports"); makeReport(a.slice(7) || "week"); }
+    else if (a.startsWith("discover:")) { go("discover"); }
     else if (a.startsWith("memo:")) { db.settings.segment = "meet"; save(); go("meetings"); }
   };
 
