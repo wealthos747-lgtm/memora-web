@@ -188,8 +188,8 @@
   const retryAfter = (r, d) => { const m = /"retryDelay"\s*:\s*"(\d+)/.exec(r.body); return m ? Math.max(2, Math.min(60, +m[1] + 1)) : d; };
   const textPart = (t) => ({ text: t });
   const filePart = (u) => (u.inline ? { inline_data: { mime_type: u.mimeType, data: u.inline } } : { file_data: { mime_type: u.mimeType, file_uri: u.uri } });
-  async function generateOne(key, model, parts, temp, json, note) {
-    const body = JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: Object.assign({ temperature: temp }, json ? { responseMimeType: "application/json" } : {}) });
+  async function generateOne(key, model, parts, temp, json, note, noThink) {
+    const body = JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: Object.assign({ temperature: temp }, json ? { responseMimeType: "application/json" } : {}, noThink ? { thinkingConfig: { thinkingBudget: 0 } } : {}) });
     const m = model.startsWith("models/") ? model : "models/" + model;
     for (let attempt = 0; ; attempt++) {
       let r;
@@ -207,6 +207,14 @@
       if (!out) { if (attempt < 2) continue; throw new ApiError(500, "Empty answer from AI"); }
       return out.replace(/^```[a-z]*\n?/, "").replace(/```$/, "").trim();
     }
+  }
+  async function generateFast(key, parts, temp, json) {
+    let last;
+    for (const m of ["gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-flash-latest"]) {
+      try { return await generateOne(key, m, parts, temp, json, null, m.startsWith("gemini-2.5")); }
+      catch (e) { last = e; if ([400, 404, 429, 500, 503, 504].includes(e.code)) continue; throw e; }
+    }
+    throw last;
   }
   async function generate(key, model, parts, temp, json, note) {
     const chain = [...new Set([model.replace("models/", ""), "gemini-2.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"])];
@@ -296,7 +304,7 @@
     if (e && e.code) return `AI error (${e.code}): ${m}`;
     return m;
   }
-  window.MemoraWeb = { text, blobs, K, setText, setBlob, remove, getBlob, has, settings, sessionOf, subjectOf, listFiles, segments, mainAudio, mimeFor, fmtTime, durationOf, download, generate, upload, tts, ttsDaily, friendly, ApiError, textPart, filePart, mp3Encoder, f2i, finalizeSession, sleep, J, dbObj, toastMsg };
+  window.MemoraWeb = { text, blobs, K, setText, setBlob, remove, getBlob, has, settings, sessionOf, subjectOf, listFiles, segments, mainAudio, mimeFor, fmtTime, durationOf, download, generate, generateFast, upload, tts, ttsDaily, friendly, ApiError, textPart, filePart, mp3Encoder, f2i, finalizeSession, sleep, J, dbObj, toastMsg };
 
   // ------------------------------------------------------------------ the bridge
   let pending = null, pendingName = "";
@@ -354,6 +362,8 @@
     },
     ask: (seg, scope, q, hist) => window.MemoraJobs.ask(seg, scope, q, hist),
     gen: (id, prompt, txt, json) => window.MemoraJobs.gen(id, prompt, txt, json),
+    genX: (id, prompt, txt, json, fast) => window.MemoraJobs.gen(id, prompt, txt, json, fast),
+    genWithX: (id, prompt, txt, json, fast, sid, files) => window.MemoraJobs.genWith(id, prompt, txt, json, sid, files, fast),
 
     // player
     playLoad: (path, title, sub, seek) => {

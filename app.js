@@ -207,8 +207,10 @@
     $$("[data-nav]").forEach((b) => (b.onclick = () => go(b.dataset.nav)));
   }
 
+  let lastDisc = 0;
   function render() {
     syncMeetings();
+    if (Date.now() - lastDisc > 4000) { lastDisc = Date.now(); setTimeout(() => { try { discoverNext(); } catch (e) { } }, 50); }
     const app = $("#app");
     document.body.classList.toggle("nonav", view === "record");
     document.body.classList.toggle("askv", view === "ask");
@@ -713,7 +715,7 @@
     bindStatus(app, s); bindTickets(app);
     $$("[data-mt]", app).forEach((b) => (b.onclick = () => { mTab = b.dataset.mt; render(); }));
     $$("#sbody [data-t]", app).forEach((b) => (b.onclick = () => playOriginal(s, Math.max(0, Number(b.dataset.t) - 3000))));
-    if (mTab === "disc") { bindDisc(app); $$("[data-dfind]", app).forEach((b) => (b.onclick = () => { A.writeText(s.id, "discoveries.json", ""); makeDiscoveries(s); render(); })); }
+    if (mTab === "disc") { if (!A.readText(s.id, "discoveries.json") && A.exists(s.id, "transcript.md") && !discBusy.has(s.id)) { makeDiscoveries(s); } bindDisc(app); $$("[data-dfind]", app).forEach((b) => (b.onclick = () => { A.writeText(s.id, "discoveries.json", ""); makeDiscoveries(s); render(); })); }
     $$("[data-ttl]", app).forEach((b) => (b.onclick = () => { s.title = b.dataset.ttl; s.titleLocked = true; save(); toast("Title updated"); render(); }));
     $$("[data-tkeep]", app).forEach((b) => (b.onclick = () => { s.titleLocked = true; save(); render(); }));
     $$("#sbody [data-memo]", app).forEach((b) => (b.onclick = () => memoDone(b.dataset.memo)));
@@ -1042,7 +1044,7 @@
     $$("[data-ph]", app).forEach((b) => (b.onclick = () => viewPhoto(s, b.dataset.ph)));
     $$("[data-addph]", app).forEach((b) => (b.onclick = () => photoSheet(s.id)));
     if (curTab === "photos") bindMaterials(app, s);
-    if (curTab === "disc") { bindDisc(app); $$("[data-dfind]", app).forEach((b) => (b.onclick = () => { A.writeText(s.id, "discoveries.json", ""); makeDiscoveries(s); render(); })); }
+    if (curTab === "disc") { if (!A.readText(s.id, "discoveries.json") && A.exists(s.id, "transcript.md") && !discBusy.has(s.id)) { makeDiscoveries(s); } bindDisc(app); $$("[data-dfind]", app).forEach((b) => (b.onclick = () => { A.writeText(s.id, "discoveries.json", ""); makeDiscoveries(s); render(); })); }
     const L = $("[data-listen]", app);
     if (L) L.onclick = () => listen(s);
     const pdf = $("[data-pdf]", app);
@@ -1891,11 +1893,11 @@ Write short Markdown with these sections: '## Goal for this meeting' (one line),
 
   // ================================================================== MEETINGS PRO — AI helper, lineup, clarity, reports
   const GEN = {}; let genN = 0;
-  function aiGen(prompt, text, json) {
+  function aiGen(prompt, text, json, fast) {
     return new Promise((res, rej) => {
       if (!db.settings.apiKey) { rej(new Error("Add your free Gemini AI key in Settings first.")); return; }
       const id = "g" + (++genN) + uid(); GEN[id] = { res, rej };
-      try { A.gen(id, prompt, text, !!json); } catch (e) { delete GEN[id]; rej(e); }
+      try { if (fast && A.genX) A.genX(id, prompt, text, !!json, true); else A.gen(id, prompt, text, !!json); } catch (e) { delete GEN[id]; rej(e); }
     });
   }
   window.onGen = (id, r) => { const g = GEN[id]; if (!g) return; delete GEN[id]; if (r && r.ok) g.res(r.text || ""); else g.rej(new Error((r && r.msg) || "Something went wrong")); };
@@ -2443,11 +2445,11 @@ Return ONLY JSON: {"title": deck title, "subtitle": one line, "slides": [ {"titl
   }
 
   // ================================================================== STUDY+ — notes & slides merge, class PPT, discoveries, learning list, exam mode
-  function aiGenFiles(prompt, text, json, sid, files) {
+  function aiGenFiles(prompt, text, json, sid, files, fast) {
     return new Promise((res, rej) => {
       if (!db.settings.apiKey) { rej(new Error("Add your free Gemini AI key in Settings first.")); return; }
       const id = "g" + (++genN) + uid(); GEN[id] = { res, rej };
-      try { A.genWith(id, prompt, text, !!json, sid, JSON.stringify(files)); } catch (e) { delete GEN[id]; rej(e); }
+      try { if (A.genWithX) A.genWithX(id, prompt, text, !!json, fast !== false, sid, JSON.stringify(files)); else A.genWith(id, prompt, text, !!json, sid, JSON.stringify(files)); } catch (e) { delete GEN[id]; rej(e); }
     });
   }
   const studyLang = () => db.settings.summaryLang || "English";
@@ -2472,12 +2474,31 @@ Return ONLY JSON: {"title": deck title, "subtitle": one line, "slides": [ {"titl
     $("[data-mpick]", sh).onclick = () => { closeSheet(); A.pickMaterials(s.id); };
     $("[data-mcam]", sh).onclick = () => { closeSheet(); s.__camForNotes = true; A.takePhoto(s.id); };
   }
+  function insertAdditions(md, adds) {
+    const lines = md.split("\n");
+    const norm = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9\u0B80-\u0BFF ]/g, "").replace(/\s+/g, " ").trim();
+    let n = 0;
+    (adds || []).forEach((a) => {
+      const pts = (a.points || []).filter(Boolean).map((p) => `- ${String(p).replace(/^[-•]\s*/, "")} 📎`); if (!pts.length) return;
+      n += pts.length;
+      const sec = norm(a.section);
+      const hi = sec ? lines.findIndex((l) => { const m = /^(#{1,4})\s+(.*)/.exec(l); return m && (norm(m[2]) === sec || norm(m[2]).includes(sec) || sec.includes(norm(m[2]) || "§")); }) : -1;
+      if (hi >= 0) {
+        const lvl = /^(#+)/.exec(lines[hi])[1].length;
+        let j = hi + 1; while (j < lines.length && !(/^#{1,4}\s/.test(lines[j]) && /^(#+)/.exec(lines[j])[1].length <= lvl)) j++;
+        let k = j; while (k > hi + 1 && !lines[k - 1].trim()) k--;
+        lines.splice(k, 0, ...pts);
+      } else lines.push("", `## ${a.section || "From your notes & slides"} 📎`, ...pts);
+    });
+    return { md: lines.join("\n"), n };
+  }
   async function runMerge(s) {
     if (matBusy[s.id]) return;
     const files = matFiles(s);
     if (!files.length) { toast("Add a photo, PDF or slides first"); return; }
     const lang = studyLang(), sb = subj(s.subjectId) || GENERAL;
     const set = (t) => { matBusy[s.id] = t; if (view === "session" && params.id === s.id) render(); };
+    const t0 = Date.now();
     try {
       set("Reading your notes & slides…");
       const read = `These files are a student's own notes (photos of handwritten or printed pages) and/or the professor's slides or PDF for the class “${s.title}” (subject: ${sb.name}).
@@ -2490,37 +2511,35 @@ Write developed study notes in ${lang}, in clean Markdown:
 - Write [unreadable] for anything you cannot read — never guess.
 - Under each heading, note the source in italics, e.g. *(from your notes, page 2)* or *(from the slides)*.
 - Include any books, courses, apps, brands or websites mentioned.`;
-      const md = await aiGenFiles(read, `Class: ${s.title} · ${sb.name}${sb.teacher ? " · " + sb.teacher : ""}`, false, s.id, files);
-      A.writeText(s.id, "materials.md", md);
-      const cur = A.readText(s.id, "summary.md");
+      if (!A.exists(s.id, "summary.before.md") && A.readText(s.id, "summary.md")) A.writeText(s.id, "summary.before.md", A.readText(s.id, "summary.md"));
+      const base = A.readText(s.id, "summary.before.md") || "";
+      const heads = base.split("\n").filter((l) => /^#{1,4}\s/.test(l)).map((l) => l.replace(/^#+\s*/, "")).slice(0, 80);
+      // 1) quick: only what is missing (small answer, no thinking) — notes update in seconds
+      const addP = `Compare these files (the student's notes and/or the professor's slides) with the CLASS NOTES below.
+List ONLY the points from the files that are NOT already covered in the class notes — facts, definitions, examples, formulas, frameworks, names, numbers, diagrams (described in words). Skip anything already covered, even if worded differently.
+Write each point as one clear, complete line in ${lang}. Never invent anything; skip what you cannot read.
+For each group of points give the heading of the class-notes section where it belongs, copied EXACTLY from this list, or a short new heading if none fits:
+${heads.map((h) => "- " + h).join("\n") || "- (no headings)"}
+Return ONLY JSON: {"additions": [ {"section": "...", "points": ["..."]} ], "covered": number of points in the files that were already in the class notes}`;
+      const pRead = aiGenFiles(read, `Class: ${s.title} · ${sb.name}${sb.teacher ? " · " + sb.teacher : ""}`, false, s.id, files, true);
       let added = [], covered = 0;
-      if (cur) {
-        set("Adding what's missing to the class notes…");
-        if (!A.exists(s.id, "summary.before.md")) A.writeText(s.id, "summary.before.md", cur);
-        const base = A.readText(s.id, "summary.before.md") || cur;
-        const mergeP = `Merge the student's notes and the professor's slides into the class notes.
-Rules:
-- Keep the CLASS NOTES exactly as they are — do not remove, shorten or reword anything.
-- For every point in NOTES & SLIDES: if it is already covered in the class notes, leave it.
-- If it is NOT covered, add it in the right topic section (or a new section at the right place), and end every added line with " 📎".
-- Keep the same Markdown style and language (${lang}).
-Return ONLY JSON: {"notes": the full merged Markdown, "added": [one short line per point you added], "covered": number of points that were already in the class notes}`;
-        const raw = await aiGen(mergeP, `CLASS NOTES:\n\n${base}\n\n===== NOTES & SLIDES =====\n\n${md}`, true);
-        const d = parseJ(raw) || {};
-        added = Array.isArray(d.added) ? d.added : []; covered = +d.covered || 0;
-        let notes = String(d.notes || "");
-        if (notes.length < base.length * 0.9) notes = base + "\n\n## From your notes & slides 📎\n" + (added.length ? added.map((x) => "- " + x + " 📎").join("\n") : md);
-        A.writeText(s.id, "summary.md", notes);
-      } else {
-        A.writeText(s.id, "summary.md", md); added = ["Notes created from your files"];
+      if (base) {
+        const d = parseJ(await aiGenFiles(addP, "CLASS NOTES:\n\n" + base, true, s.id, files, true)) || {};
+        const adds = Array.isArray(d.additions) ? d.additions : [];
+        covered = +d.covered || 0;
+        added = adds.flatMap((a) => (a.points || []).filter(Boolean));
+        A.writeText(s.id, "summary.md", insertAdditions(base, adds).md);
+        s.merge = { at: nowISO(), added, covered, files: files.length, secs: Math.round((Date.now() - t0) / 1000) }; save();
+        toast(added.length ? `${added.length} new point${added.length > 1 ? "s" : ""} added to your notes` : "Your notes already had everything");
+        set("Notes updated ✓ · now writing the full notes from your files…");
       }
-      ["translations.json"].forEach(() => 0);
-      A.writeText(s.id, "quiz.json", ""); A.writeText(s.id, "slides.json", ""); A.writeText(s.id, "discoveries.json", "");
-      s.merge = { at: nowISO(), added, covered, files: files.length }; save();
-      set("");
-      toast(added.length ? `${added.length} new point${added.length > 1 ? "s" : ""} added to your notes` : "Your notes already had everything");
+      // 2) the full developed notes from the files (ran in parallel) — feeds Class Book, Q&A, slides, discoveries
+      const md = await pRead;
+      A.writeText(s.id, "materials.md", md);
+      if (!base) { A.writeText(s.id, "summary.md", md); added = ["Notes created from your files"]; s.merge = { at: nowISO(), added, covered: 0, files: files.length }; save(); toast("Notes created from your files"); }
+      A.writeText(s.id, "quiz.json", ""); A.writeText(s.id, "slides.json", "");
       if (A.exists(s.id, "transcript.md") || A.exists(s.id, "classbook.md")) A.process(s.id, "experience", "book", "", false);
-    } catch (e) { matBusy[s.id] = ""; toast(e.message); s.merge = Object.assign(s.merge || {}, { error: e.message, errAt: nowISO() }); save(); }
+    } catch (e) { toast(e.message); s.merge = Object.assign(s.merge || {}, { error: e.message, errAt: nowISO() }); save(); }
     finally { matBusy[s.id] = ""; if (view === "session") render(); }
   }
   function materialsBody(s) {
@@ -2570,7 +2589,7 @@ Return ONLY JSON: {"notes": the full merged Markdown, "added": [one short line p
 8 to 14 content slides. Each slide: a short title (max 7 words), 3 to 5 bullets (max 14 words each, with the key terms, examples and numbers), an optional "example" line, and speaker notes (2 to 4 sentences explaining the slide simply).
 Language: ${studyLang()}. Never invent facts.
 Return ONLY JSON: {"title": deck title, "subtitle": one line, "slides": [ {"title": "...", "bullets": ["..."], "example": "" , "notes": "..."} ], "takeaways": [3 to 5 key takeaways]}`;
-        const raw = await aiGen(prompt, `CLASS NOTES:\n${A.readText(s.id, "summary.md")}\n\nNOTES & SLIDES FROM FILES:\n${A.readText(s.id, "materials.md") || "-"}`, true);
+        const raw = await aiGen(prompt, `CLASS NOTES:\n${A.readText(s.id, "summary.md")}\n\nNOTES & SLIDES FROM FILES:\n${A.readText(s.id, "materials.md") || "-"}`, true, true);
         d = parseJ(raw); if (!d || !Array.isArray(d.slides)) throw new Error("Could not read the slide content. Try again.");
         A.writeText(s.id, "slides.json", JSON.stringify(d));
       }
@@ -2617,15 +2636,15 @@ Return ONLY JSON: {"title": deck title, "subtitle": one line, "slides": [ {"titl
   // ---------- discoveries: new information beyond the topic (classes and meetings)
   const DTYPES = { market: ["Market & industry", "chart"], story: ["Success stories", "starf"], app: ["Apps & tools", "spark"], brand: ["Brands & companies", "flag"], book: ["Books", "book"], course: ["Courses & certifications", "cal"], person: ["People to know", "users"], website: ["Websites & resources", "globe"], idea: ["Ideas & tips", "spark"] };
   const dKey = (it) => (it.type + "|" + String(it.name || "").toLowerCase().trim());
-  let discBusy = "";
+  const discBusy = new Set();
   function discoverNext() {
-    if (discBusy || !db.settings.apiKey) return;
-    const s = db.sessions.slice().sort((a, b) => b.date.localeCompare(a.date)).find((x) => A.exists(x.id, "summary.md") && A.exists(x.id, "transcript.md") && !A.readText(x.id, "discoveries.json") && !job(x.id).running && (!x.discTried || Date.now() - new Date(x.discTried).getTime() > 6 * 3600000));
-    if (s) makeDiscoveries(s);
+    if (discBusy.size >= 3 || !db.settings.apiKey) return;
+    db.sessions.slice().sort((a, b) => b.date.localeCompare(a.date)).filter((x) => !discBusy.has(x.id) && A.exists(x.id, "summary.md") && A.exists(x.id, "transcript.md") && !A.readText(x.id, "discoveries.json") && (!x.discTried || Date.now() - new Date(x.discTried).getTime() > 6 * 3600000))
+      .slice(0, 3 - discBusy.size).forEach(makeDiscoveries);
   }
   function makeDiscoveries(s) {
-    if (discBusy) return;
-    discBusy = s.id; s.discTried = nowISO(); save();
+    if (discBusy.has(s.id)) return;
+    discBusy.add(s.id); s.discTried = nowISO(); save();
     const kind = isMeet(s) ? "meeting" : "class";
     const prompt = `Below is the full transcript of a ${kind} the user recorded (“${s.title}”). The main topic is already covered in separate notes.
 Your job: find the valuable NEW information that goes BEYOND the main topic — things the speaker mentioned on the side that the user may not know and could use in future:
@@ -2634,12 +2653,12 @@ Rules: only things actually said (Tamil and English are both possible). Never mi
 For each item give a clear explanation in simple ${studyLang()} using your general knowledge (what it is), why it matters for the user, and one concrete next step.
 Return ONLY JSON: {"items": [ {"type": "market"|"story"|"app"|"brand"|"book"|"course"|"person"|"website"|"idea", "name": short name, "said": what was said, one line, "at": "MM:SS" timestamp from the transcript, "explain": 2-3 sentence explanation, "why": one line, "next": one line next step} ]} — {"items": []} if nothing new was mentioned.`;
     const tr = A.readText(s.id, "transcript.md").slice(0, 300000) + (A.readText(s.id, "materials.md") ? "\n\n=== NOTES & SLIDES ===\n" + A.readText(s.id, "materials.md").slice(0, 60000) : "");
-    aiGen(prompt, tr, true).then((raw) => {
+    aiGen(prompt, tr, true, true).then((raw) => {
       const d = parseJ(raw); if (!d) throw new Error("bad");
       const items = (d.items || []).filter((x) => x && x.name && DTYPES[x.type]);
       A.writeText(s.id, "discoveries.json", JSON.stringify({ at: nowISO(), items }));
       if (items.length) toast(`${items.length} new discover${items.length > 1 ? "ies" : "y"} in “${s.title.slice(0, 30)}”`);
-    }).catch(() => { }).then(() => { discBusy = ""; if (view === "discover" || view === "session") render(); });
+    }).catch(() => { }).then(() => { discBusy.delete(s.id); if (view === "discover" || view === "session" || view === "today" || view === "meetings") render(); setTimeout(discoverNext, 500); });
   }
   function allDiscoveries() {
     const out = [];
@@ -2659,7 +2678,7 @@ Return ONLY JSON: {"items": [ {"type": "market"|"story"|"app"|"brand"|"book"|"co
   }
   function discBody(s) {
     const d = J(A.readText(s.id, "discoveries.json"), null);
-    if (!d) return discBusy === s.id ? `<div class="card status">${ic("spark")}<div><b>Finding new information beyond the topic…</b><span>Books, apps, brands, market facts, stories</span></div></div>`
+    if (!d) return discBusy.has(s.id) ? `<div class="card status">${ic("spark")}<div><b>Finding new information beyond the topic…</b><span>Books, apps, brands, market facts, stories</span></div></div>`
       : `<div class="empty"><div class="big">Discoveries</div>Books, courses, apps, brands, market facts and stories mentioned beyond the main topic.${A.exists(s.id, "transcript.md") ? `<br><button class="btn gold" style="margin-top:12px" data-dfind>${ic("spark")} Find them now</button>` : "<br>They appear after the transcript is ready."}</div>`;
     if (!(d.items || []).length) return `<div class="empty">Nothing beyond the main topic was mentioned here.<br><button class="lnk" data-dfind>Check again</button></div>`;
     const by = {}; d.items.forEach((it) => (by[it.type] = by[it.type] || []).push(Object.assign({ sid: s.id, date: s.date }, it)));
@@ -2673,7 +2692,7 @@ Return ONLY JSON: {"items": [ {"type": "market"|"story"|"app"|"brand"|"book"|"co
     if (db.dmore[key]) return;
     const prompt = `Write a short, practical guide in ${studyLang()} about “${it.name}” (${(DTYPES[it.type] || ["topic"])[0]}). It was mentioned in my ${isMeet(sess(it.sid)) ? "meeting" : "class"}: “${it.said || ""}”.
 Use clean Markdown, max 250 words: '## What it is', '## Key ideas' (3-6 bullets), '## How I can use it' (practical), ${it.type === "book" ? "'## Chapters / big lessons'," : it.type === "course" ? "'## Who offers it, duration and level (as far as you know)'," : ""} '## Next step'. If you are not sure of a fact, say so.`;
-    aiGen(prompt, "", false).then((md) => { db.dmore[key] = md; save(); if ($("#sheet.on")) show(); }).catch((e) => toast(e.message));
+    aiGen(prompt, "", false, true).then((md) => { db.dmore[key] = md; save(); if ($("#sheet.on")) show(); }).catch((e) => toast(e.message));
   }
   function toggleLearn(key, sid) {
     db.learn = db.learn || [];
@@ -2703,7 +2722,7 @@ Use clean Markdown, max 250 words: '## What it is', '## Key ideas' (3-6 bullets)
     return `<button class="back" data-back>${ic("left")} Back</button>
       <div class="shead"><div class="eyebrow">${ic("spark")} Discoveries</div><h1>Beyond the topic</h1><div class="meta"><span>${all.length} things worth knowing from your classes and meetings</span></div></div>
       <div class="segs" style="margin-top:14px"><button class="seg ${dTab === "all" ? "on" : ""}" data-dtab="all">All · ${all.length}</button><button class="seg ${dTab === "week" ? "on" : ""}" data-dtab="week">This week · ${week.length}</button><button class="seg ${dTab === "learn" ? "on" : ""}" data-dtab="learn">Learning list · ${learn.filter((l) => l.status !== "done").length}</button></div>
-      ${discBusy ? `<div class="card status" style="margin-bottom:10px">${ic("spark")}<div><b>Reading “${esc((sess(discBusy) || {}).title || "")}”…</b><span>${pending} recording${pending === 1 ? "" : "s"} to go</span></div></div>` : ""}
+      ${discBusy.size ? `<div class="card status" style="margin-bottom:10px">${ic("spark")}<div><b>Reading ${discBusy.size} recording${discBusy.size > 1 ? "s" : ""}…</b><span>${pending} to go · new ones appear as they finish</span></div></div>` : ""}
       ${dTab === "learn" ? (learn.length ? learn.map((l) => `<div class="card dcard"><div class="dh"><div class="dic">${ic((DTYPES[l.type] || ["", "spark"])[1])}</div><div class="tx"><b>${esc(l.name)}</b><span>${esc((DTYPES[l.type] || ["Other"])[0])}${sess(l.sid) ? " · " + esc(sess(l.sid).title) : ""}</span></div>
           <button class="chip ${l.status === "done" ? "ok" : l.status === "doing" ? "gold" : ""}" data-dlearn="${esc(l.key)}" data-dsid="${l.sid}">${({ todo: "To learn", doing: "Learning", done: "Done ✓" })[l.status]}</button></div>
           <div class="row" style="margin-top:8px"><button class="btn small line" data-dmore="${esc(l.key)}" data-dsid="${l.sid}">${ic("spark")} Learn more</button></div></div>`).join("") : `<div class="empty">Tap “Learning list” on any book, course or idea to track it here. Memora reminds you every Sunday.</div>`)
@@ -2721,7 +2740,7 @@ Use clean Markdown, max 250 words: '## What it is', '## Key ideas' (3-6 bullets)
   };
   function discHomeCard() {
     const all = allDiscoveries(), w0 = weekStart(new Date()).toISOString(), wk = all.filter((x) => x.date >= w0).length, lt = (db.learn || []).filter((l) => l.status !== "done").length;
-    return `<button class="card clar" data-godisc><div class="eyebrow">${ic("spark")} Discoveries ${discBusy ? "· finding…" : ""}</div>
+    return `<button class="card clar" data-godisc><div class="eyebrow">${ic("spark")} Discoveries ${discBusy.size ? "· finding…" : ""}</div>
       <div class="clh">${all.length ? `${wk ? wk + " new this week · " : ""}${all.length} books, apps, brands & insights beyond the topic` : "Books, apps, brands and market insights mentioned beyond the topic appear here."}</div>
       ${lt ? `<div class="clf">${ic("book")} ${lt} on your learning list</div>` : ""}</button>`;
   }

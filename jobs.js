@@ -2,7 +2,7 @@
 (function () {
   "use strict";
   const W = window.MemoraWeb;
-  const { text, K, setText, setBlob, remove, getBlob, has, settings, sessionOf, subjectOf, listFiles, segments, mainAudio, mimeFor, fmtTime, durationOf, generate, upload, tts, ttsDaily, friendly, ApiError, textPart, filePart, mp3Encoder, sleep, J, dbObj } = W;
+  const { text, K, setText, setBlob, remove, getBlob, has, settings, sessionOf, subjectOf, listFiles, segments, mainAudio, mimeFor, fmtTime, durationOf, generate, generateFast, upload, tts, ttsDaily, friendly, ApiError, textPart, filePart, mp3Encoder, sleep, J, dbObj } = W;
   const active = new Map(); // sid -> job key
   const call = (fn, ...a) => { try { window[fn] && window[fn](...a); } catch (e) { console.error(e); } };
 
@@ -486,11 +486,12 @@
   }
 
   // ---------------------------------------------------------------- public
-  async function gen(id, prompt, txt, json) {
+  async function gen(id, prompt, txt, json, fast) {
     try {
       const st = settings(); const key = (st.apiKey || "").trim();
       if (!key) throw new Error("Add your free Gemini AI key in Settings first.");
-      const out = await generate(key, st.model || "gemini-flash-latest", [textPart(prompt), textPart(txt)], 0.35, !!json);
+      const parts = [textPart(prompt), textPart(txt)];
+      const out = fast ? await generateFast(key, parts, 0.3, !!json) : await generate(key, st.model || "gemini-flash-latest", parts, 0.35, !!json);
       call("onGen", id, { ok: true, text: out });
     } catch (e) { call("onGen", id, { ok: false, msg: friendly(e) }); }
   }
@@ -514,21 +515,25 @@
     }
     return out.join("\n") || "(no text found on the slides)";
   }
-  async function genWith(id, prompt, txt, json, sid, filesJson) {
+  const upCache = new Map();
+  async function genWith(id, prompt, txt, json, sid, filesJson, fast) {
     try {
       const st = settings(); const key = (st.apiKey || "").trim();
       if (!key) throw new Error("Add your free Gemini AI key in Settings first.");
-      const parts = [textPart(prompt)];
-      for (const it of JSON.parse(filesJson || "[]")) {
-        const b = getBlob(sid, it.file); if (!b) continue;
-        const label = it.label || it.file, ln = it.file.toLowerCase();
-        if (ln.endsWith(".pptx")) parts.push(textPart(label + " (slide text):\n" + await pptxText(b)));
-        else if (ln.endsWith(".ppt")) parts.push(textPart(label + ": old .ppt format could not be read — mention that it should be saved as PDF or PPTX."));
-        else if (ln.endsWith(".pdf")) { const up = await upload(key, b, "application/pdf", it.file); parts.push(textPart(label + ":"), filePart(up)); }
-        else { const sm = await shrink(b, 1800); const up = await upload(key, sm, "image/jpeg", it.file); parts.push(textPart(label + ":"), filePart(up)); }
-      }
-      parts.push(textPart(txt));
-      const out = await generate(key, st.model || "gemini-flash-latest", parts, 0.3, !!json);
+      const prep = await Promise.all(JSON.parse(filesJson || "[]").map(async (it) => {
+        const b = getBlob(sid, it.file); if (!b) return [];
+        const label = it.label || it.file, ln = it.file.toLowerCase(), ck = sid + "/" + it.file;
+        if (ln.endsWith(".pptx")) return [textPart(label + " (slide text):\n" + await pptxText(b))];
+        if (ln.endsWith(".ppt")) return [textPart(label + ": old .ppt format could not be read — mention that it should be saved as PDF or PPTX.")];
+        let up = upCache.get(ck);
+        if (!up || Date.now() - up.at > 40 * 3600000) {
+          up = ln.endsWith(".pdf") ? await upload(key, b, "application/pdf", it.file) : await upload(key, await shrink(b, 1600), "image/jpeg", it.file);
+          up.at = Date.now(); upCache.set(ck, up);
+        }
+        return [textPart(label + ":"), filePart(up)];
+      }));
+      const parts = [textPart(prompt)].concat(...prep, [textPart(txt)]);
+      const out = fast ? await generateFast(key, parts, 0.3, !!json) : await generate(key, st.model || "gemini-flash-latest", parts, 0.3, !!json);
       call("onGen", id, { ok: true, text: out });
     } catch (e) { call("onGen", id, { ok: false, msg: friendly(e) }); }
   }
