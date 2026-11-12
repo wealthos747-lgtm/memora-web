@@ -1238,7 +1238,7 @@
     if (quiet) return savePdfQuiet(s, doc, name, fileBase(s));
     toast("Saving PDF…");
     savePdfQuiet(s, doc, name, fileBase(s)).then((r) => {
-      if (!r.ok) { toast(r.msg || "PDF failed"); return; }
+      if (!r.ok) { toast("Opening the print screen — choose “Save as PDF”"); A.printPdf(doc, name.replace(/\.pdf$/, "")); return; }
       const sh = sheet(`<h3>PDF saved ✓</h3><p class="sub">${esc(name)}<br>${esc(r.msg)}</p>
         <div class="row"><button class="btn line" data-print>${ic("file")} Print</button><button class="btn gold" data-share>${ic("share")} Share</button></div>`);
       $("[data-share]", sh).onclick = () => { closeSheet(); A.shareFile(s.id, r.local, name); };
@@ -2245,7 +2245,7 @@ Return ONLY JSON:
     if (quiet) return savePdfQuiet(RS, html, name, folder);
     toast("Saving PDF…");
     return savePdfQuiet(RS, html, name, folder).then((r) => {
-      if (!r.ok) { toast(r.msg || "PDF failed"); return; }
+      if (!r.ok) { toast("Opening the print screen — choose “Save as PDF”"); A.printPdf(doc, name.replace(/\.pdf$/, "")); return; }
       const sh = sheet(`<h3>PDF saved ✓</h3><p class="sub">${esc(name)}<br>${esc(r.msg)}</p>
         <div class="row"><button class="btn line" data-print>${ic("file")} Print</button>${r.local ? `<button class="btn gold" data-share>${ic("share")} Share</button>` : ""}</div>`);
       const shb = $("[data-share]", sh); if (shb) shb.onclick = () => { closeSheet(); A.shareFile(RS.id, r.local, name); };
