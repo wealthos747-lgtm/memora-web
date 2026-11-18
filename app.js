@@ -963,7 +963,7 @@
       ${st.stuck ? `<div class="stuck">${ic("bolt")}<span>No progress for a while — it may be stuck.</span><button class="btn small line" data-unstick>Stop</button></div>` : ""}
       <div class="bar"><i style="width:${Math.max(4, Math.round(st.p * 100))}%"></i></div></div>`;
     if (st.k === "err") return `<div class="card"><div class="status">${ic("bolt")}<div><b>Couldn't finish</b><span>${esc(st.err)}</span></div></div>
-      <div class="row" style="margin-top:14px"><button class="btn small line" data-gokey>Settings</button><button class="btn small gold" data-retry>${ic("refresh")} Retry</button></div></div>`;
+      <div class="row" style="margin-top:14px"><button class="btn small line" data-errcopy>${ic("copy")} Copy details</button><button class="btn small gold" data-retry>${ic("refresh")} Retry</button></div></div>`;
     if (st.k === "saved") {
       if (!db.settings.apiKey) return `<div class="card"><div class="status">${ic("key")}<div><b>Recording saved ✓</b><span>Add your free AI key to turn it into detailed notes, a PDF and a voice recap.</span></div></div>
         <button class="btn gold block" style="margin-top:14px" data-gokey>${ic("key")} Add free AI key</button></div>`;
@@ -1077,6 +1077,7 @@
 
   function bindStatus(root, s) {
     $$("[data-retry]", root).forEach((b) => (b.onclick = () => { retryJob(s, job(s.id).job); setTimeout(render, 300); }));
+    $$("[data-errcopy]", root).forEach((b) => (b.onclick = () => { const d = A.readText(s.id, "error_detail.txt") || ("error: " + (job(s.id).error || "")); A.copyText(d); toast("Details copied — paste them in the chat"); }));
     $$("[data-gokey]", root).forEach((b) => (b.onclick = () => keySheet()));
     $$("[data-unstick]", root).forEach((b) => (b.onclick = () => { A.resetJob(s.id); toast("Stopped — tap Retry to start again"); setTimeout(render, 200); }));
     $$("[data-gorec]", root).forEach((b) => (b.onclick = () => go("record", { id: s.id })));
