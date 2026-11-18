@@ -210,7 +210,7 @@
   let lastDisc = 0;
   function render() {
     syncMeetings();
-    if (Date.now() - lastDisc > 4000) { lastDisc = Date.now(); setTimeout(() => { try { discoverNext(); } catch (e) { } }, 50); }
+    if (Date.now() - lastDisc > 4000) { lastDisc = Date.now(); setTimeout(() => { try { discoverNext(); } catch (e) { } try { mergeFollowUp(); } catch (e) { } }, 50); }
     const app = $("#app");
     document.body.classList.toggle("nonav", view === "record");
     document.body.classList.toggle("askv", view === "ask");
@@ -2492,6 +2492,20 @@ Return ONLY JSON: {"title": deck title, "subtitle": one line, "slides": [ {"titl
     });
     return { md: lines.join("\n"), n };
   }
+  const hasRecording = (s) => (s.durationMs || 0) > 30000 || A.exists(s.id, "audio.m4a");
+  function mergeFollowUp() {
+    db.sessions.forEach((s) => {
+      if (isMeet(s) || matBusy[s.id] || job(s.id).running) return;
+      // older classes whose notes were made from the files only → rebuild them from the original recording
+      if (s.merge && (s.merge.added || [])[0] === "Notes created from your files" && hasRecording(s) && !s.rebuiltFromRec && db.settings.apiKey) {
+        s.rebuiltFromRec = true; s.mergePending = true; save();
+        A.deleteMaterial(s.id, "summary.md"); A.deleteMaterial(s.id, "summary.before.md");
+        A.process(s.id, "summary", "", "", false);
+        return;
+      }
+      if (s.mergePending && A.exists(s.id, "summary.md") && (s.materials || []).length) { s.mergePending = false; save(); runMerge(s); }
+    });
+  }
   async function runMerge(s) {
     if (matBusy[s.id]) return;
     const files = matFiles(s);
@@ -2536,6 +2550,13 @@ Return ONLY JSON: {"additions": [ {"section": "...", "points": ["..."]} ], "cove
       // 2) the full developed notes from the files (ran in parallel) — feeds Class Book, Q&A, slides, discoveries
       const md = await pRead;
       A.writeText(s.id, "materials.md", md);
+      if (!base && hasRecording(s)) {
+        // notes always come from the ORIGINAL recording — the files are added on top once those notes are ready
+        s.mergePending = true; s.merge = { at: nowISO(), added: [], covered: 0, files: files.length, waiting: true }; save();
+        toast("Your files are read ✓ — they'll be added once the notes from the recording are ready");
+        if (!job(s.id).running) A.process(s.id, "summary", "", "", false);
+        return;
+      }
       if (!base) { A.writeText(s.id, "summary.md", md); added = ["Notes created from your files"]; s.merge = { at: nowISO(), added, covered: 0, files: files.length }; save(); toast("Notes created from your files"); }
       A.writeText(s.id, "quiz.json", ""); A.writeText(s.id, "slides.json", "");
       if (A.exists(s.id, "transcript.md") || A.exists(s.id, "classbook.md")) A.process(s.id, "experience", "book", "", false);
@@ -2548,7 +2569,8 @@ Return ONLY JSON: {"additions": [ {"section": "...", "points": ["..."]} ], "cove
       ? `<button class="ph" data-mview="${i}"><img src="${fileSrc(s.id, m.file)}"><span>Notes</span></button>`
       : `<button class="ph doc" data-mview="${i}"><div>${ic(m.kind === "pdf" ? "file" : "image")}<b>${m.kind.toUpperCase()}</b><small>${esc((m.name || "").slice(0, 26))}</small></div></button>`;
     return `${busy ? `<div class="card status">${ic("spark")}<div><b>${esc(busy)}</b><span>Keep Memora open · about a minute</span></div></div>` : ""}
-      ${mg && mg.at && !busy ? `<div class="card insq" style="margin-bottom:12px"><b>${mg.added && mg.added.length ? `${mg.added.length} point${mg.added.length > 1 ? "s" : ""} added to your notes 📎` : "Your class notes already covered everything"}</b>${mg.covered ? `<span class="meta" style="display:block;margin-top:2px">${mg.covered} points were already there</span>` : ""}
+      ${mg && mg.waiting && s.mergePending && !busy ? `<div class="card insq" style="margin-bottom:12px"><b>Your files are read ✓</b><span class="meta" style="display:block;margin-top:2px">They'll be added to the notes from the original recording as soon as those are ready.</span></div>` : ""}
+      ${mg && mg.at && !mg.waiting && !busy ? `<div class="card insq" style="margin-bottom:12px"><b>${mg.added && mg.added.length ? `${mg.added.length} point${mg.added.length > 1 ? "s" : ""} added to your notes 📎` : "Your class notes already covered everything"}</b>${mg.covered ? `<span class="meta" style="display:block;margin-top:2px">${mg.covered} points were already there</span>` : ""}
         ${(mg.added || []).length ? `<ul class="ol">${mg.added.slice(0, 8).map((x) => `<li>${esc(x)}</li>`).join("")}${mg.added.length > 8 ? `<li>…and ${mg.added.length - 8} more (marked 📎 in Notes)</li>` : ""}</ul>` : ""}
         ${A.exists(s.id, "summary.before.md") ? `<button class="lnk" style="margin-top:6px" data-mundo>Undo — restore the original notes</button>` : ""}</div>` : ""}
       ${mg && mg.error && !busy && (!mg.at || mg.errAt > mg.at) ? `<div class="card" style="color:var(--rec);margin-bottom:12px">${esc(mg.error)} <button class="lnk" data-mmerge>Try again</button></div>` : ""}
