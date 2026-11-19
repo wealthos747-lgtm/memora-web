@@ -114,7 +114,7 @@
       const speech = rms > Math.max(r.noise * 1.8, 0.0035);
       r.since = speech ? 0 : r.since + 1; r.frames++;
       REC.amp = Math.min(32767, rms * 32767 * 2.2);
-      const keep = !skip || r.since <= 200 || r.frames < 50;
+      const keep = true;   // never drop audio while recording (v2.9.5) — quiet parts are trimmed later
       if (!keep) { r.pre.push(fr); if (r.pre.length > 15) { r.pre.shift(); REC.skipped += 20; } r.inSil = true; continue; }
       if (r.inSil) { for (const p of r.pre) encodeFrame(p); r.pre = []; r.inSil = false; }
       encodeFrame(fr);
