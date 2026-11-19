@@ -210,7 +210,7 @@
   let lastDisc = 0;
   function render() {
     syncMeetings();
-    if (Date.now() - lastDisc > 4000) { lastDisc = Date.now(); setTimeout(() => { try { discoverNext(); } catch (e) { } try { mergeFollowUp(); } catch (e) { } }, 50); }
+    if (Date.now() - lastDisc > 4000) { lastDisc = Date.now(); setTimeout(() => { try { mergeFollowUp(); } catch (e) { } }, 50); }
     const app = $("#app");
     document.body.classList.toggle("nonav", view === "record");
     document.body.classList.toggle("askv", view === "ask");
@@ -962,6 +962,8 @@
     if (st.k === "proc") return `<div class="card"><div class="status"><div class="spin" style="width:30px;height:30px;flex:none"></div><div><b>${esc(st.label)}</b><span>${st.started ? clock(Date.now() - st.started) + " elapsed · " : ""}${Math.round((st.p || 0) * 100)}% · you can close the app — it keeps working.</span></div></div>
       ${st.stuck ? `<div class="stuck">${ic("bolt")}<span>No progress for a while — it may be stuck.</span><button class="btn small line" data-unstick>Stop</button></div>` : ""}
       <div class="bar"><i style="width:${Math.max(4, Math.round(st.p * 100))}%"></i></div></div>`;
+    if (st.k === "err" && /^⏳/.test(st.err || "")) return `<div class="card"><div class="status">${ic("clock")}<div><b>Waiting for the free limit</b><span>${esc(st.err.replace(/^⏳\s*/, ""))}</span></div></div>
+      <div class="row" style="margin-top:14px"><button class="btn small line" data-errcopy>${ic("copy")} Copy details</button><button class="btn small gold" data-retry>${ic("refresh")} Try now</button></div></div>`;
     if (st.k === "err") return `<div class="card"><div class="status">${ic("bolt")}<div><b>Couldn't finish</b><span>${esc(st.err)}</span></div></div>
       <div class="row" style="margin-top:14px"><button class="btn small line" data-errcopy>${ic("copy")} Copy details</button><button class="btn small gold" data-retry>${ic("refresh")} Retry</button></div></div>`;
     if (st.k === "saved") {
@@ -1062,7 +1064,18 @@
   }
   // keeps work moving without the user: resumes jobs cut off by the phone, and re-tries the replay after a voice limit
   let lastAuto = 0;
+  // after the notes: Class Book + Q&A (one job, one request after another) — the rest only when tapped
+  function autoNext() {
+    if (!db.settings.apiKey || db.settings.autoExperience === false) return;
+    db.sessions.forEach((s) => {
+      if (isMeet(s) || job(s.id).running || s.autoBookDone) return;
+      if (A.exists(s.id, "summary.md") && A.exists(s.id, "transcript.md") && !A.exists(s.id, "classbook.md")) {
+        s.autoBookDone = true; save(); A.process(s.id, "experience", "book", "", false);
+      }
+    });
+  }
   function autoContinue() {
+    try { autoNext(); } catch (e) { }
     if (Date.now() - lastAuto < 55000 || !db.settings.apiKey) return;
     lastAuto = Date.now();
     const today = todayISO();
@@ -1070,7 +1083,7 @@
       const j = job(s.id);
       if (j.running) return;
       const rt = J(A.readText(s.id, "retry.json"), null);
-      if (rt && rt.at && Date.now() >= rt.at) { A.writeText(s.id, "retry.json", ""); A.process(s.id, "experience", rt.what || "replay", "", false); return; }
+      if (rt && rt.at && Date.now() >= rt.at) { A.writeText(s.id, "retry.json", ""); if (rt.job) retryJob(s, rt.job); else A.process(s.id, "experience", rt.what || "replay", "", false); return; }
       if (j.error && /Stopped before finishing/.test(j.error) && s.autoResumed !== today) { s.autoResumed = today; save(); retryJob(s, j.job); }
     });
   }
@@ -1406,7 +1419,8 @@
         <button class="set" style="width:100%;text-align:left" data-name><div class="tx"><b>Your name</b><span>${esc(st.name || "Add your name")}</span></div>${ic("right", "chev")}</button></div>
       <h2 class="sec">AI</h2><div class="card" style="padding:4px 16px">
         <button class="set" style="width:100%;text-align:left" data-key><div class="tx"><b>Gemini AI key</b><span>${st.apiKey ? "Connected · ••••" + esc(st.apiKey.slice(-4)) : "Not added — free from Google"}</span></div>${ic("right", "chev")}</button>
-        <button class="set" style="width:100%;text-align:left" data-model><div class="tx"><b>AI model</b><span>${esc(st.model)}</span></div>${ic("right", "chev")}</button>
+        <button class="set" style="width:100%;text-align:left" data-groq><div class="tx"><b>Groq key · fast transcript</b><span>${st.groqKey ? "Connected · ••••" + esc(st.groqKey.slice(-4)) + " · 8 h of audio a day free" : "Not added — free, makes transcripts fast and saves your Gemini limit"}</span></div>${ic("right", "chev")}</button>
+        <button class="set" style="width:100%;text-align:left" data-model><div class="tx"><b>AI model</b><span>${esc(!st.model || st.model === "gemini-flash-latest" ? "Gemini Flash-Lite (free, recommended)" : st.model)}</span></div>${ic("right", "chev")}</button>
         <button class="set" style="width:100%;text-align:left" data-slang><div class="tx"><b>Notes language</b><span>${esc(st.summaryLang)}</span></div>${ic("right", "chev")}</button>
         <button class="set" style="width:100%;text-align:left" data-quality><div class="tx"><b>Processing mode</b><span>${st.quality === "thorough" ? "Thorough — full transcript first, then notes" : "Fast — notes straight from the audio, transcript after"}</span></div>${ic("right", "chev")}</button>
         <div class="set"><div class="tx"><b>Auto-create notes after class</b><span>Starts as soon as you end the class</span></div>${t(st.autoProcess, "autoProcess")}</div>
@@ -1464,6 +1478,7 @@
     if (cp) cp.onclick = () => verifyPin("Change PIN", () => createPin(() => toast("PIN changed")));
     $("[data-name]", app).onclick = () => textSheet("Your name", "Used for greetings.", st.name, (v) => { st.name = v; save(); render(); });
     $("[data-key]", app).onclick = () => keySheet();
+    $$("[data-groq]", app).forEach((b) => (b.onclick = () => groqSheet()));
     $("[data-model]", app).onclick = () => modelSheet();
     $("[data-slang]", app).onclick = () => choiceSheet("Notes language", "Main language for notes and the voice recap. You can still translate any class later.", LANGS.map((l) => [l[1], l[1]]), st.summaryLang, (v) => { st.summaryLang = v; if (v === "English") st.voice = st.voice.startsWith("en") ? st.voice : "en-IN"; else { const l = LANGS.find((x) => x[1] === v); st.voice = l[0] === "ta-Latn" ? "en-IN" : l[0]; } save(); render(); });
     $("[data-vengine]", app).onclick = () => choiceSheet("Voice quality", "Studio voice sounds like a real person and works for Tamil, Hindi and other languages. If the free limit is reached, Memora falls back to the phone voice automatically.", [["studio", "Studio voice — natural (recommended)"], ["phone", "Phone voice — offline, basic"]], st.voiceEngine || "studio", (v) => { st.voiceEngine = v; save(); render(); });
@@ -1501,11 +1516,21 @@
     $("[data-test]", sh).onclick = () => { $("#kres").textContent = "Testing…"; A.testKey($("#kv").value.trim(), st.model); };
     $("[data-ok]", sh).onclick = () => { st.apiKey = $("#kv").value.trim(); save(); closeSheet(); toast(st.apiKey ? "Key saved" : "Key removed"); render(); };
   }
+  function groqSheet() {
+    const st = db.settings;
+    const sh = sheet(`<h3>Free Groq key</h3><p class="sub">Groq makes the transcript of your original recording with Whisper — very fast, 8 hours of audio a day free, and it saves your Gemini allowance for the notes. The key stays on this phone.</p>
+      <ol class="steps"><li>Tap <b>Open Groq</b> and sign in (Google sign-in works, no card).</li><li>Tap <b>Create API Key</b>, give any name.</li><li>Copy the key (starts with <b>gsk_…</b>) and paste it here.</li></ol>
+      <button class="btn line block" data-open>${ic("key")} Open Groq</button>
+      <div class="field" style="margin-top:16px"><label>Your Groq key</label><input class="inp" id="gv" value="${esc(st.groqKey || "")}" placeholder="gsk_…" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+      <button class="btn gold block" data-ok>Save key</button>`);
+    $("[data-open]", sh).onclick = () => A.openUrl("https://console.groq.com/keys");
+    $("[data-ok]", sh).onclick = () => { st.groqKey = $("#gv").value.trim(); save(); closeSheet(); toast(st.groqKey ? "Groq key saved" : "Groq key removed"); render(); };
+  }
   window.onKeyTest = (r) => { const el = $("#kres"); if (el) { el.textContent = r.msg; el.style.color = r.ok ? "var(--ok)" : "var(--warn)"; } };
 
   function modelSheet() {
     const st = db.settings;
-    const sh = sheet(`<h3>AI model</h3><p class="sub"><b>gemini-flash-latest</b> is recommended: fast, accurate and on Google's free tier. Load the list to pick another.</p>
+    const sh = sheet(`<h3>AI model</h3><p class="sub">Leave it on <b>gemini-flash-latest</b>: Memora then uses <b>Flash-Lite</b>, which has the biggest free daily allowance. Pick another only if you have a paid key.</p>
       <div class="field"><input class="inp" id="mv" value="${esc(st.model)}"></div>
       <div id="mlist"></div>
       <div class="row"><button class="btn line" data-load>Load models</button><button class="btn gold" data-ok>Save</button></div>`);
@@ -1622,7 +1647,7 @@
     drawPlayer();
   }
   setInterval(() => tick(false), 500);
-  setInterval(() => { try { autoContinue(); } catch (e) { } try { discoverNext(); } catch (e) { } }, 15000);
+  setInterval(() => { try { autoContinue(); } catch (e) { } }, 15000);
 
   window.onAppResume = () => { if (view !== "record") render(); };
 
@@ -2661,9 +2686,9 @@ Return ONLY JSON: {"title": deck title, "subtitle": one line, "slides": [ {"titl
   const dKey = (it) => (it.type + "|" + String(it.name || "").toLowerCase().trim());
   const discBusy = new Set();
   function discoverNext() {
-    if (discBusy.size >= 3 || !db.settings.apiKey) return;
+    if (discBusy.size >= 1 || !db.settings.apiKey) return;
     db.sessions.slice().sort((a, b) => b.date.localeCompare(a.date)).filter((x) => !discBusy.has(x.id) && A.exists(x.id, "summary.md") && A.exists(x.id, "transcript.md") && !A.readText(x.id, "discoveries.json") && (!x.discTried || Date.now() - new Date(x.discTried).getTime() > 6 * 3600000))
-      .slice(0, 3 - discBusy.size).forEach(makeDiscoveries);
+      .slice(0, 1).forEach(makeDiscoveries);
   }
   function makeDiscoveries(s) {
     if (discBusy.has(s.id)) return;

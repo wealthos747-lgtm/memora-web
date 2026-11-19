@@ -188,7 +188,14 @@
   const retryAfter = (r, d) => { const m = /"retryDelay"\s*:\s*"(\d+)/.exec(r.body); return m ? Math.max(2, Math.min(60, +m[1] + 1)) : d; };
   const textPart = (t) => ({ text: t });
   const filePart = (u) => (u.inline ? { inline_data: { mime_type: u.mimeType, data: u.inline } } : { file_data: { mime_type: u.mimeType, file_uri: u.uri } });
-  async function generateOne(key, model, parts, temp, json, note, noThink) {
+  let aiQueue = Promise.resolve(), aiLast = 0;
+  function gated(fn) {
+    const run = aiQueue.then(async () => { const w = aiLast + 4500 - Date.now(); if (w > 0) await new Promise((r) => setTimeout(r, w)); aiLast = Date.now(); return fn(); });
+    aiQueue = run.catch(() => { });
+    return run;
+  }
+  async function generateOne(key, model, parts, temp, json, note, noThink) { return gated(() => generateOne0(key, model, parts, temp, json, note, noThink)); }
+  async function generateOne0(key, model, parts, temp, json, note, noThink) {
     const body = JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: Object.assign({ temperature: temp }, json ? { responseMimeType: "application/json" } : {}, noThink ? { thinkingConfig: { thinkingBudget: 0 } } : {}) });
     const m = model.startsWith("models/") ? model : "models/" + model;
     for (let attempt = 0; ; attempt++) {
@@ -210,14 +217,16 @@
   }
   async function generateFast(key, parts, temp, json) {
     let last;
-    for (const m of ["gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-flash-latest"]) {
+    for (const m of ["gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-flash-latest"]) {
       try { return await generateOne(key, m, parts, temp, json, null, m.startsWith("gemini-2.5")); }
       catch (e) { last = e; if ([400, 404, 429, 500, 503, 504].includes(e.code)) continue; throw e; }
     }
     throw last;
   }
   async function generate(key, model, parts, temp, json, note) {
-    const chain = [...new Set([model.replace("models/", ""), "gemini-2.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"])];
+    const mm = model.replace("models/", "").trim();
+    const first = !mm || mm === "gemini-flash-latest" || mm === "gemini-2.5-flash" ? "gemini-flash-lite-latest" : mm;
+    const chain = [...new Set([first, "gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-flash-latest"])];
     let last;
     for (const m of chain) {
       try { return await generateOne(key, m, parts, temp, json, note); }
