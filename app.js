@@ -658,11 +658,12 @@
     const st = job(s.id);
     if (md) return `<div class="md">${mdHtml(md)}</div><button class="btn line block" style="margin-top:14px" data-mkspark>${ic("refresh")} New sparks</button>`;
     if (st.running && /spark/i.test(st.stage || "") ) return `<div class="empty"><div class="big">💡 Spark is thinking…</div>Ideas, other angles, next steps, books and courses — ready in a minute.</div>`;
+    if (A.exists(s.id, "spark_queued.txt")) return `<div class="empty"><div class="big">⏳ Spark is in the queue</div>Memora does one AI step at a time. Spark starts by itself as soon as the current step finishes — you can leave this screen.</div>`;
     const err = A.readText(s.id, "spark_error.txt");
     return `<div class="empty"><div class="big">💡 Spark</div>Ideas, opinions, other angles and next-level moves on the key points — plus books, thinkers, theories and courses to go deeper.${err ? `<br><span style="color:var(--muted)">${esc(err)}</span>` : ""}${A.exists(s.id, "transcript.md") ? `<br><button class="btn gold" style="margin-top:12px" data-mkspark>${ic("spark")} Spark it now</button>` : "<br>It appears after the notes are ready."}</div>`;
   }
   function bindSpark(app, s) {
-    $$("[data-mkspark]", app).forEach((b) => (b.onclick = () => { A.writeText(s.id, "spark_error.txt", ""); A.process(s.id, "spark", "", "", true); toast("Sparking… you can leave this screen"); setTimeout(render, 300); }));
+    $$("[data-mkspark]", app).forEach((b) => (b.onclick = () => { A.writeText(s.id, "spark_error.txt", ""); if (job(s.id).running) A.writeText(s.id, "spark_queued.txt", "1"); A.process(s.id, "spark", "", "", true); toast("Sparking… you can leave this screen"); setTimeout(render, 300); }));
   }
   function meetingView(s) {
     const st = status(s);
@@ -1692,21 +1693,24 @@
     };
     const rp = J(A.readText(s.id, "replay_audio.m4a.progress.json"), null);
     const repPreview = !rep && A.exists(s.id, "replay_audio.m4a.preview.m4a") && rp ? `<button class="btn small gold" data-exprev>Play ${rp.done}/${rp.total}</button>` : "";
+    const repMake = repPreview || (!rep && !busy ? `<button class="btn small line" data-exmk="replay">Make</button>` : "");
+    const repPartial = !rep && !!rp;
     const err = !st.running && st.error && (st.job || "").startsWith("experience") ? `<p class="meta" style="color:var(--warn);margin:8px 0 0">${esc(st.error)}</p>` : "";
     return `<h2 class="sec">Relive this class</h2><div class="card exp">
       ${row("book", "Class Book", book ? "The class as a step-by-step chapter · PDF" : "The whole class as a clear, step-by-step chapter", book, `<button class="btn small gold" data-exbook>Open</button>`, "book", "Class Book")}
       ${row("list", "Q&A Bank", qa ? "Every class question + discussion, exam practice · PDF" : "All questions asked in class + exam practice with answers", qa, `<button class="btn small gold" data-exqa>Open</button>`, "qa", "Q&A Bank")}
-      ${row("head", "Classroom Replay", rep ? "Teacher & student voices — feel the class again" : "Re-lives the class as a teacher–student conversation", rep, `<button class="btn small gold" data-exrep>Play</button>`, "replay", "Replay", repPreview)}
+      ${row("head", "Classroom Replay", rep ? "Teacher & student voices — feel the class again" : "Re-lives the class as a teacher–student conversation", rep, `<button class="btn small gold" data-exrep>Play</button>`, "replay", "Replay", repMake)}
       ${row("spark", "Clean recording", cl && cs ? `${dur(cs.outMs)} · removed ${dur(cs.cutMs + cs.silenceMs)} of noise, breaks & side talk` : "Original audio with noise, silences & side talk removed", cl, `<button class="btn small gold" data-excl>Play</button>`, "clean", "Clean audio")}
       ${busy && st.updated && Date.now() - st.updated > 4 * 60000 ? `<div class="stuck">${ic("bolt")}<span>No progress for ${Math.round((Date.now() - st.updated) / 60000)} min — it may be stuck.</span><button class="btn small line" data-unstick>Stop</button></div>` : ""}
       ${busy ? `<div class="status" style="margin-top:12px"><div class="spin" style="width:22px;height:22px;flex:none"></div><div><b style="font-size:13px">Overall ${Math.round((st.progress || 0) * 100)}%</b><span>${st.started ? clock(Date.now() - st.started) + " elapsed · " : ""}you can lock the phone — it keeps going</span></div></div><div class="bar"><i style="width:${Math.max(3, Math.round((st.progress || 0) * 100))}%"></i></div>`
-        : !(book && qa && rep && cl) ? `<button class="btn gold block" style="margin-top:12px" data-exall>${ic("spark")} ${book || qa || rep || cl ? "Create the rest" : "Create class experience"}</button>` : ""}
+        : !(book && qa && cl) || repPartial ? `<button class="btn gold block" style="margin-top:12px" data-exall>${ic("spark")} ${book || qa || cl ? (repPartial && book && qa && cl ? "Finish the Replay" : "Create the rest") : "Create class experience"}</button>` : ""}
       ${err}</div>`;
   }
   function bindExp(app, s) {
     const run = (w) => { A.process(s.id, "experience", w, "", false); toast("Preparing… you can leave this screen"); setTimeout(render, 300); };
     const us = $("[data-unstick]", app); if (us) us.onclick = () => { A.resetJob(s.id); toast("Stopped — tap ↻ / Create to start again"); setTimeout(render, 200); };
     const a = $("[data-exall]", app); if (a) a.onclick = () => run("all");
+    $$("[data-exmk]", app).forEach((b) => (b.onclick = () => run(b.dataset.exmk)));
     $$("[data-exre]", app).forEach((b) => (b.onclick = () => confirmSheet("Make it again?", "The current version will be replaced.", "Make again", false, () => run(b.dataset.exre))));
     const bk = $("[data-exbook]", app); if (bk) bk.onclick = () => go("book", { id: s.id, doc: "classbook" });
     const qb = $("[data-exqa]", app); if (qb) qb.onclick = () => go("book", { id: s.id, doc: "qabank" });
