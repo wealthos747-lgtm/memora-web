@@ -652,6 +652,18 @@
 
   // ---------- meeting detail
   let mTab = "summary";
+  // 💡 Spark — the AI's own ideas, books, theories and courses, kept apart from the notes
+  function sparkBody(s) {
+    const md = A.readText(s.id, "spark.md");
+    const st = job(s.id);
+    if (md) return `<div class="md">${mdHtml(md)}</div><button class="btn line block" style="margin-top:14px" data-mkspark>${ic("refresh")} New sparks</button>`;
+    if (st.running && /spark/i.test(st.stage || "") ) return `<div class="empty"><div class="big">💡 Spark is thinking…</div>Ideas, other angles, next steps, books and courses — ready in a minute.</div>`;
+    const err = A.readText(s.id, "spark_error.txt");
+    return `<div class="empty"><div class="big">💡 Spark</div>Ideas, opinions, other angles and next-level moves on the key points — plus books, thinkers, theories and courses to go deeper.${err ? `<br><span style="color:var(--muted)">${esc(err)}</span>` : ""}${A.exists(s.id, "transcript.md") ? `<br><button class="btn gold" style="margin-top:12px" data-mkspark>${ic("spark")} Spark it now</button>` : "<br>It appears after the notes are ready."}</div>`;
+  }
+  function bindSpark(app, s) {
+    $$("[data-mkspark]", app).forEach((b) => (b.onclick = () => { A.writeText(s.id, "spark_error.txt", ""); A.process(s.id, "spark", "", "", true); toast("Sparking… you can leave this screen"); setTimeout(render, 300); }));
+  }
   function meetingView(s) {
     const st = status(s);
     const ready = A.exists(s.id, "summary.md");
@@ -664,6 +676,8 @@
       const md = A.readText(s.id, "summary.md");
       const ag = agenda.length ? `<div class="card" style="margin-bottom:14px;padding:12px 14px"><div class="eyebrow" style="margin-bottom:8px">Agenda</div>${agenda.map((a) => `<div class="agi"><span class="chip ${a.status === "done" ? "ok" : a.status === "partial" ? "gold" : "err"}">${a.status === "done" ? "Done" : a.status === "partial" ? "Partly" : "Pending"}</span><div><b>${esc(a.item)}</b>${a.note ? `<span>${esc(a.note)}</span>` : ""}</div></div>`).join("")}</div>` : "";
       body = md ? ag + `<div class="md">${mdHtml(md)}</div>` : `<div class="empty"><div class="big">Summary appears here</div>Key points, decisions, risks and next steps.</div>`;
+    } else if (mTab === "spark") {
+      body = sparkBody(s);
     } else if (mTab === "insights") {
       body = insightsBody(s);
     } else if (mTab === "disc") {
@@ -701,6 +715,7 @@
       </div>
       <div class="tabs">
         <button class="tab ${mTab === "summary" ? "on" : ""}" data-mt="summary">Summary</button>
+        <button class="tab ${mTab === "spark" ? "on" : ""}" data-mt="spark">💡 Spark</button>
         <button class="tab ${mTab === "insights" ? "on" : ""}" data-mt="insights">Insights</button>
         <button class="tab ${mTab === "mom" ? "on" : ""}" data-mt="mom">Minutes</button>
         <button class="tab ${mTab === "disc" ? "on" : ""}" data-mt="disc">Discoveries</button>
@@ -714,6 +729,7 @@
     $$("[data-back]", app).forEach((b) => (b.onclick = back));
     bindStatus(app, s); bindTickets(app);
     $$("[data-mt]", app).forEach((b) => (b.onclick = () => { mTab = b.dataset.mt; render(); }));
+    if (mTab === "spark") bindSpark(app, s);
     $$("#sbody [data-t]", app).forEach((b) => (b.onclick = () => playOriginal(s, Math.max(0, Number(b.dataset.t) - 3000))));
     if (mTab === "disc") { if (!A.readText(s.id, "discoveries.json") && A.exists(s.id, "transcript.md") && !discBusy.has(s.id)) { makeDiscoveries(s); } bindDisc(app); $$("[data-dfind]", app).forEach((b) => (b.onclick = () => { A.writeText(s.id, "discoveries.json", ""); makeDiscoveries(s); render(); })); }
     $$("[data-ttl]", app).forEach((b) => (b.onclick = () => { s.title = b.dataset.ttl; s.titleLocked = true; save(); toast("Title updated"); render(); }));
@@ -994,6 +1010,8 @@
     if (curTab === "notes") {
       const md = A.readText(s.id, notesFile(curLang));
       body = md ? `<div class="md">${mdHtml(md)}</div>` : (ready && curLang ? `<div class="empty">Translating to ${langName(curLang)}…</div>` : `<div class="empty"><div class="big">Notes appear here</div>Detailed, topic-by-topic notes with every point from the class.</div>`);
+    } else if (curTab === "spark") {
+      body = sparkBody(s);
     } else if (curTab === "transcript") {
       const t = A.readText(s.id, "transcript.md");
       body = t ? `<div class="md">${mdHtml(t)}</div>` : `<div class="empty">The full transcript appears after processing. Tap any time-stamp to hear that moment.</div>`;
@@ -1023,6 +1041,7 @@
       ${ready ? `<div id="expwrap">${expCard(s)}</div>` : ""}
       <div class="tabs">
         <button class="tab ${curTab === "notes" ? "on" : ""}" data-tab="notes">Notes</button>
+        <button class="tab ${curTab === "spark" ? "on" : ""}" data-tab="spark">💡 Spark</button>
         <button class="tab ${curTab === "transcript" ? "on" : ""}" data-tab="transcript">Transcript</button>
         <button class="tab ${curTab === "marks" ? "on" : ""}" data-tab="marks">Important${marks.length ? " " + marks.length : ""}</button>
         <button class="tab ${curTab === "photos" ? "on" : ""}" data-tab="photos">Notes & slides${photos.length + (s.materials || []).length ? " " + (photos.length + (s.materials || []).length) : ""}</button>
@@ -1039,6 +1058,7 @@
     bindStatus(app, s);
     $$("[data-tab]", app).forEach((b) => (b.onclick = () => { curTab = b.dataset.tab; render(); }));
     if (curTab === "revise") bindRevise(app, s);
+    if (curTab === "spark") bindSpark(app, s);
     bindExp(app, s);
     $$("[data-lang]", app).forEach((b) => (b.onclick = () => { curLang = b.dataset.lang; render(); }));
     $$("[data-translate]", app).forEach((b) => (b.onclick = () => translateSheet(s)));
@@ -1422,7 +1442,6 @@
         <button class="set" style="width:100%;text-align:left" data-groq><div class="tx"><b>Groq key · fast transcript</b><span>${st.groqKey ? "Connected · ••••" + esc(st.groqKey.slice(-4)) + " · 8 h of audio a day free" : "Not added — free, makes transcripts fast and saves your Gemini limit"}</span></div>${ic("right", "chev")}</button>
         <button class="set" style="width:100%;text-align:left" data-model><div class="tx"><b>AI model</b><span>${esc(!st.model || st.model === "gemini-flash-latest" ? "Gemini Flash-Lite (free, recommended)" : st.model)}</span></div>${ic("right", "chev")}</button>
         <button class="set" style="width:100%;text-align:left" data-slang><div class="tx"><b>Notes language</b><span>${esc(st.summaryLang)}</span></div>${ic("right", "chev")}</button>
-        <button class="set" style="width:100%;text-align:left" data-quality><div class="tx"><b>Processing mode</b><span>${st.quality === "thorough" ? "Thorough — full transcript first, then notes" : "Fast — notes straight from the audio, transcript after"}</span></div>${ic("right", "chev")}</button>
         <div class="set"><div class="tx"><b>Auto-create notes after class</b><span>Starts as soon as you end the class</span></div>${t(st.autoProcess, "autoProcess")}</div>
         <div class="set"><div class="tx"><b>Also make single-voice recap</b><span>Off = faster. Classes use the two-voice replay as their audio</span></div>${t(!!st.autoRecap, "autoRecap")}</div>
         <div class="set"><div class="tx"><b>Auto-create class experience</b><span>Class Book, Q&A Bank, replay & clean audio right after the notes</span></div>${t(st.autoExperience !== false, "autoExperience")}</div></div>
@@ -1470,7 +1489,7 @@
       st[k] = !st[k]; save(); render();
     }));
     $("[data-backup]", app).onclick = backupSheet;
-    $("[data-quality]", app).onclick = () => choiceSheet("Processing mode", "How Memora turns a recording into notes.", [["fast", "Fast (recommended) — notes in a few minutes, transcript follows"], ["thorough", "Thorough — transcript first, then notes (slower)"]], st.quality || "fast", (v) => { st.quality = v; save(); render(); });
+    if ($("[data-quality]", app)) $("[data-quality]", app).onclick = () => choiceSheet("Processing mode", "How Memora turns a recording into notes.", [["fast", "Fast (recommended) — notes in a few minutes, transcript follows"], ["thorough", "Thorough — transcript first, then notes (slower)"]], st.quality || "fast", (v) => { st.quality = v; save(); render(); });
     $("[data-restore]", app).onclick = () => confirmSheet("Restore a backup?", "Classes, meetings, tasks and settings will be replaced by the backup's contents.", "Choose file", false, () => A.pickBackup());
     const gr = $("[data-grace]", app);
     if (gr) gr.onclick = () => choiceSheet("Lock after", "How long Memora can stay unlocked after you switch to another app.", [[0, "Immediately"], [60000, "After 1 minute"], [300000, "After 5 minutes"], [900000, "After 15 minutes"]], lockSt().grace, (v) => { A.setGrace(Number(v)); render(); });

@@ -34,8 +34,7 @@ const Prompts = {
                 + "## Questions asked in class\n**Q:** … **A:** … for every question raised by students or the teacher.\n"
                 + "## Assignments, deadlines & announcements\nHomework, readings, submissions, dates, next-class plans. Write \"None mentioned\" if there were none.\n"
                 + "## Exam focus\nThe most likely exam / interview questions from this class, with one-line answer hints.\n"
-                + "## Quick revision\n10–15 crisp one-line points to revise in two minutes.\n"
-                + "## 💡 Spark — ideas for you\nPick the 3–5 most important or new ideas from this session. For each, a '### <idea>' heading with: **Why it matters** (one line), **Another angle** (a different view, counter-point or opinion), **Take it to the next level** (2–3 specific, creative ways the user can apply or extend it in work, study or life), **Think about** (one sharp question). Then a '📚 Go deeper' line: 1–2 well-known books (Title — Author), the named theory, model or framework behind the idea and its originator, and one kind of course to search for (for example a Coursera, NPTEL or YouTube topic). Name only real, widely known books and authors; if you are not sure a title exists, give the topic to search instead. Keep Spark separate from the notes: the notes stay strictly what was said, Spark is clearly your suggestions.\n\n"
+                + "## Quick revision\n10–15 crisp one-line points to revise in two minutes.\n\n"
                 + "Output only the Markdown notes.";
     },
     narration(lang) {
@@ -102,7 +101,7 @@ const Prompts = {
                 + "{\n"
                 + "  \"titles\": [3 short, specific title options (max 8 words each) that describe what was ACTUALLY discussed, best first],\n"
                 + "  \"title\": the best of those titles,\n"
-                + "  \"summary\": Markdown string — '## In one line' (the single most important outcome), '## Key discussion points' (detailed bullets grouped by topic in the order discussed, each with [MM:SS]), '## Decisions', '## Numbers & facts mentioned' (every figure, price, date, place, name), '## Risks & open questions', '## Next steps', '## Unclear parts' only if any, and last '## 💡 Spark — ideas for you': Pick the 3–5 most important or new ideas from this session. For each, a '### <idea>' heading with: **Why it matters** (one line), **Another angle** (a different view, counter-point or opinion), **Take it to the next level** (2–3 specific, creative ways the user can apply or extend it in work, study or life), **Think about** (one sharp question). Then a '📚 Go deeper' line: 1–2 well-known books (Title — Author), the named theory, model or framework behind the idea and its originator, and one kind of course to search for (for example a Coursera, NPTEL or YouTube topic). Name only real, widely known books and authors; if you are not sure a title exists, give the topic to search instead. Keep Spark separate from the notes: the notes stay strictly what was said, Spark is clearly your suggestions.,\n"
+                + "  \"summary\": Markdown string — '## In one line' (the single most important outcome), '## Key discussion points' (detailed bullets grouped by topic in the order discussed, each with [MM:SS]), '## Decisions', '## Numbers & facts mentioned' (every figure, price, date, place, name), '## Risks & open questions', '## Next steps', '## Unclear parts' only if any,\n"
                 + "  \"mom\": Markdown string — formal Minutes of Meeting: '# Minutes of Meeting', a details list (Title, Date, Type, Attendees, Recorded by), '## Agenda' as a table | # | Agenda item | Status (Completed / Partly done / Pending / Not discussed) | Outcome |, '## Discussion' (per topic, concise but complete, with who said what and [MM:SS]), '## Decisions', '## Action items' as a table | # | Action | Owner | Due date | Status |, '## Follow-ups from earlier meetings' (only if open tasks were given), '## Next meeting',\n"
                 + "  \"people\": [ { \"name\": person who spoke or was discussed, \"role\": their role or company if said, else \"\", \"points\": their main points, asks or concerns in one line, \"commitments\": what they promised, or \"\" } ],\n"
                 + "  \"agenda\": [ { \"item\": string, \"status\": \"done\" | \"partial\" | \"pending\", \"note\": short outcome, \"at\": \"MM:SS\" or \"\" } ] — use the given agenda if any (mark items not discussed as pending with note 'Not discussed'), otherwise derive the agenda from what was discussed,\n"
@@ -212,5 +211,33 @@ const Prompts = {
                 + "- jokes or stories that are part of the lesson\n"
                 + "If you are not sure whether something is side talk or a real question/discussion, KEEP it. Cut whole sentences only, with a little margin.\n"
                 + "Return ONLY JSON: { \"cuts\": [ { \"start\": \"H:MM:SS or MM:SS\", \"end\": \"H:MM:SS or MM:SS\", \"reason\": short } ] } using the transcript's timestamps; { \"cuts\": [] } if nothing should be cut.";
+    },
+    /** Spark: the AI's own ideas on top of the class / meeting — kept apart from the notes, which stay strictly what was said. */
+    spark(ctx, lang, meeting) {
+        const who = meeting ? "a key account manager who wants to grow his accounts, his career and his own ideas" : "a working professional studying this subject who wants to apply it at work and grow";
+        return "You are a brilliant mentor, strategist and teacher. Below is the full time-stamped transcript of one " + (meeting ? "meeting" : "class") + " the user recorded. The user is " + who + ".\n"
+                + "The notes are already written. Your job is different: SPARK the user's thinking — go beyond what was said, with your own ideas, opinions and suggestions, all rooted in what was actually discussed.\n\n"
+                + ctx + "\n"
+                + "Write in " + lang + " using clean Markdown. Be specific, creative and practical — never generic motivation. Ignore phone calls, side talk and noise.\n\n"
+                + "Use exactly this structure:\n"
+                + "# 💡 Spark — <a short catchy title>\n"
+                + "## The big idea\n2–3 sentences: the single most powerful idea in this " + (meeting ? "meeting" : "class") + " and why it matters to the user.\n"
+                + "## Sparks\nPick the 5–7 most important or new points that were discussed. For EACH, a '### <n>. <point> (≈ time)' section with:\n"
+                + "- **What was said** — one line\n"
+                + "- **Why it matters** — one line\n"
+                + "- **Another angle** — a different view, a counter-point, or where this idea breaks\n"
+                + "- **My take** — your honest opinion in one or two lines\n"
+                + "- **Take it to the next level** — 2–3 specific, creative ways to apply or extend it (at work, in study, in a side idea)\n"
+                + "- **Try this week** — one small concrete action\n"
+                + "- **Think about** — one sharp question\n"
+                + "## Connect the dots\nHow these points link to each other and to bigger ideas from other fields (business, psychology, economics, technology, history). 4–6 bullets.\n"
+                + "## Fresh ideas\n3–5 original ideas the user could build, test or propose, inspired by this session — each with a one-line 'first step'.\n"
+                + "## 📚 Go deeper\n"
+                + "### Books\n3–5 books as '**Title** — Author: why read it for this topic (one line)'.\n"
+                + "### Thinkers & theories\n3–5 named theories, models or frameworks behind these ideas, each with its originator and a one-line explanation.\n"
+                + "### Courses & talks\n2–4 things to search for: a course topic (Coursera, edX, NPTEL), a well-known talk, or a YouTube topic — say what to type in the search box.\n"
+                + "## One-line takeaway\nA memorable line to remember this session by.\n\n"
+                + "Truth rule: name only real, widely known books, authors, theories and talks. If you are not sure a title or author exists, give the topic to search instead of inventing a name. Never invent anything about what was said in the session.\n"
+                + "Output only the Markdown.";
     },
 };

@@ -162,6 +162,12 @@
       await this.w("meeting.json", JSON.stringify(extra));
       await this.w("summary.md", out.summary || "");
     }
+    async runSpark() {
+      if (!this.has("transcript.md")) throw new Error("Spark needs the transcript — make the notes first.");
+      this.phase(0.1, 0.95, "💡 Spark — thinking…");
+      const lang = this.s.summaryLang || "English";
+      await this.w("spark.md", await this.gen(this.model, [textPart(Prompts.spark(this.ctxBlock(), lang, this.isMeeting())), textPart("FULL TRANSCRIPT:\n\n" + this.f("transcript.md"))], 0.7));
+    }
     async makeNarration(lang) {
       this.phase(0.8, 0.85, "Writing the audio script");
       const lite = "gemini-flash-lite-latest";
@@ -562,7 +568,9 @@
           else if (type === "quiz") await j.runQuiz();
           else if (type === "pack") await j.runPack(code || "all");
           else if (type === "experience") await j.runExperience(code);
+          else if (type === "spark") await j.runSpark();
           j.status(false, 1, "Ready", j.voiceNote);
+          if (type === "summary" && !j.has("spark.md")) { try { await j.runSpark(); } catch (e) { await j.w("spark_error.txt", String(e.message || e)); } }
           if (type === "summary" && !j.isMeeting() && j.s.autoExperience !== false) {
             const e = new Job(sid, "experience:all");
             try { e.status(true, 0.02, "Preparing Class Book, Q&A, replay & clean audio", null); await e.runExperience("all"); e.status(false, 1, "Ready", e.voiceNote); }
